@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: LGPL-2.1-only
+#
+# udsp - software voice DSP for FXS lines
+# Copyright (C) 2026 Adtran Inc.
+# Author: Chad Monroe <chad.monroe@adtran.com>
+#
+# A fixture of lec_verdicts.py --check. A daemon restart and a re-time cut
+# the run of line 1 into three segments. The restart keeps gen 1 and the
+# frame count falls. The re-time moves gen to 2 and the frame count starts
+# over. The first line of each segment gives no row. The records of line 0
+# stay out of the rows of line 1. The verdict lines before the restart carry
+# no stale word, and they still read.
+# check line 1
+# expect 1 200 100 2 30 0.93 0 0
+# expect 1 300 100 0 20 1.00 0 0
+# expect 1 200 100 0 0 - 0 0
+# expect 2 200 100 1 24 0.96 1 0
+2026-09-29 12:00:01.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 1 at 1000 frame 100 fired 5 dt 50 probes 0 lost 0 gain -30.0
+2026-09-29 12:00:01.010 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 0 gen 4 at 1000 frame 100 fired 9 dt 90 probes 0 lost 0 gain -30.0
+2026-09-29 12:00:01.520 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec verdict line 1 gen 1 at 1520 frame 152 excess 1.2 hold 0 arm est trusted 0 tail 0 since 40 nlp dt probing 0 mic -38.0 ref -20.1 win -18.2 est -50.3 noise -41.5 erle 12.3 run 1
+2026-09-29 12:00:01.600 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec verdict line 1 gen 1 at 1600 frame 160 excess 0.8 hold 24 arm est trusted 0 tail 1 since 48 nlp dt probing 0 mic -38.4 ref -60.2 win -18.2 est -51.0 noise -41.5 erle 12.3 run 9
+2026-09-29 12:00:02.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 1 at 2000 frame 200 fired 7 dt 80 probes 0 lost 0 gain -30.0
+2026-09-29 12:00:02.010 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 0 gen 4 at 2000 frame 200 fired 9 dt 90 probes 0 lost 0 gain -30.0
+2026-09-29 12:00:03.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 1 at 3000 frame 300 fired 7 dt 100 probes 0 lost 0 gain -30.0
+2026-09-29 12:00:05.000 mt7988 daemon.debug uvoiced[30102]: [hal] udsp: lec second line 1 gen 1 at 1000 frame 100 fired 0 dt 0 probes 0 lost 0 gain -6.0
+2026-09-29 12:00:06.000 mt7988 daemon.debug uvoiced[30102]: [hal] udsp: lec second line 1 gen 1 at 2000 frame 200 fired 0 dt 0 probes 0 lost 0 gain -6.0
+2026-09-29 12:00:07.500 mt7988 daemon.debug uvoiced[30102]: [hal] udsp: lec second line 1 gen 2 at 3500 frame 100 fired 0 dt 0 probes 0 lost 0 gain -6.0
+2026-09-29 12:00:08.130 mt7988 daemon.debug uvoiced[30102]: [hal] udsp: lec verdict line 1 gen 2 at 4130 frame 163 excess 14.8 hold 0 arm classic trusted 0 tail 0 since 3 nlp pass probing 1 mic -12.1 ref -14.0 win -14.0 est -127.0 noise -127.0 erle 0.0 run 1 stale 0
+2026-09-29 12:00:08.500 mt7988 daemon.debug uvoiced[30102]: [hal] udsp: lec second line 1 gen 2 at 4500 frame 200 fired 1 dt 24 probes 1 lost 0 gain -6.0

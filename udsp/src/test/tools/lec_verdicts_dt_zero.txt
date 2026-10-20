@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: LGPL-2.1-only
+#
+# udsp - software voice DSP for FXS lines
+# Copyright (C) 2026 Adtran Inc.
+# Author: Chad Monroe <chad.monroe@adtran.com>
+#
+# A fixture of lec_verdicts.py --check. Two seconds raise no double-talk
+# frame, so their hold share reads "-" and not a number. The third second
+# holds one lone verdict and its hangover: 1 of 24 frames fired.
+# check line 1
+# expect 1 200 100 0 0 - 0 0
+# expect 1 300 100 0 0 - 0 0
+# expect 1 400 100 1 24 0.96 0 0
+2026-09-29 12:20:01.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 1 at 11000 frame 100 fired 4 dt 40 probes 0 lost 0 gain -30.0
+2026-09-29 12:20:02.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 1 at 12000 frame 200 fired 4 dt 40 probes 0 lost 0 gain -30.0
+2026-09-29 12:20:03.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 1 at 13000 frame 300 fired 4 dt 40 probes 0 lost 0 gain -30.0
+2026-09-29 12:20:03.310 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec verdict line 1 gen 1 at 13310 frame 331 excess 6.4 hold 0 arm est trusted 1 tail 0 since 17 nlp dt probing 0 mic -21.7 ref -16.8 win -16.8 est -41.2 noise -127.0 erle 21.4 run 1 stale 1
+2026-09-29 12:20:04.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 1 at 14000 frame 400 fired 5 dt 64 probes 0 lost 0 gain -30.0

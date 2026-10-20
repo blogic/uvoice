@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: LGPL-2.1-only
+#
+# udsp - software voice DSP for FXS lines
+# Copyright (C) 2026 Adtran Inc.
+# Author: Chad Monroe <chad.monroe@adtran.com>
+#
+# A fixture of lec_verdicts.py --check. The line of frame 300 is missing, so
+# the row of frame 400 spans 200 frames and its deltas cover the whole span.
+# The same line reports two records that the ring refused.
+# check line 1
+# expect 3 200 100 2 30 0.93 0 0
+# expect 3 400 200 3 60 0.95 0 2
+# expect 3 500 100 0 10 1.00 0 0
+2026-09-29 12:10:01.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 3 at 91000 frame 100 fired 0 dt 0 probes 0 lost 0 gain -30.0
+2026-09-29 12:10:01.400 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec verdict line 1 gen 3 at 91400 frame 140 excess 2.1 hold 0 arm est trusted 1 tail 0 since 2 nlp dt probing 0 mic -30.2 ref -18.4 win -18.4 est -44.9 noise -70.3 erle 19.0 run 1 stale 1
+2026-09-29 12:10:02.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 3 at 92000 frame 200 fired 2 dt 30 probes 0 lost 0 gain -30.0
+2026-09-29 12:10:04.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 3 at 94000 frame 400 fired 5 dt 90 probes 0 lost 2 gain -30.0
+2026-09-29 12:10:05.000 mt7988 daemon.debug uvoiced[29384]: [hal] udsp: lec second line 1 gen 3 at 95000 frame 500 fired 5 dt 100 probes 0 lost 0 gain -30.0
