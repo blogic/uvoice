@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  A complete T.38 page crosses after the DUT accepts the upgrade that this
+  peer offers; the DUT calls out and sends the page.
+
+  The DUT calls out, and this peer answers with audio. It then offers the
+  upgrade with the audio withdrawn, and its image stream at `media_port` plus
+  two. The 200 must carry the audio at port 0, and the image at a live port
+  (`udptl t38`) with `a=T38FaxRateManagement:transferredTCF` and no direction
+  attribute.
+
+  A `t38-peer` process receives the page at that port, and reports the T.30
+  result. Run this scenario with `SIPP_TIMEOUT_SECONDS=600`, the same lab
+  conditions as `uac_t38_page.xml`. A page takes about one minute, and the DUT
+  hangs up after it. The 180-second wait for that BYE covers a slow page and
+  keeps the local BYE fallback reachable. That fallback uses the From URI, its
+  tag and the To URI that this peer captures from the INVITE.
+
+  RFC 3264 sections 6 and 8.4, RFC 3362.
+-->
+<scenario name="UAS T.38 page reception">
+  <recv request="INVITE" timeout="60000" rrs="true">
+    <action>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg" check_it="true"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg" check_it="true"
+            assign_to="to_match,local_uri"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp T38
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The upgrade offer: the audio stream is withdrawn and the image stream
+       replaces it. -->
+  <send retrans="500" start_txn="t38">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp T38
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio 0 RTP/AVP 0
+      m=image [media_port+2] udptl t38
+      a=T38FaxVersion:0
+      a=T38FaxRateManagement:transferredTCF
+      a=T38MaxBitRate:9600
+      a=T38FaxMaxDatagram:400
+      a=T38FaxUdpEC:t38UDPRedundancy
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="t38" timeout="10000" rrs="true">
+    <action>
+      <!-- the offered order, mirrored: the withdrawn audio line stays
+           withdrawn and the image line comes back at a live port -->
+      <ereg regexp="m=audio[[:space:]]+0[[:space:]]+RTP/AVP"
+            search_in="body" check_it="true" assign_to="audio_refused"/>
+      <ereg regexp="m=image[[:space:]]+[1-9][0-9]*[[:space:]]+udptl[[:space:]]+t38"
+            search_in="body" check_it="true" assign_to="image_accepted"/>
+      <ereg regexp="a=T38FaxRateManagement:transferredTCF"
+            search_in="body" check_it="true" assign_to="image_rate_mgmt"/>
+      <!-- an image section carries no direction attribute on any exchange,
+           so the answer must name none -->
+      <ereg regexp="a=(sendrecv|sendonly|recvonly|inactive)"
+            search_in="body" check_it_inverse="true" assign_to="image_no_dir"/>
+    </action>
+  </recv>
+
+  <send ack_txn="t38">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The DUT normally hangs up after the page. The long wait also covers a
+       slow page, and its timeout selects the local BYE fallback. -->
+  <recv request="BYE" timeout="180000" ontimeout="local_bye"/>
+
+  <send next="done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="local_bye"/>
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+  <!-- The label stands last on purpose. A jump past the last message ends
+       the call as a successful one (SIPp 3.7.3 call.cpp, call::next). A
+       <nop> here would erase the failure of every check above it. -->
+  <label id="done"/>
+  <Reference variables="from_match,to_match,audio_refused,image_accepted,image_rate_mgmt,image_no_dir"/>
+</scenario>

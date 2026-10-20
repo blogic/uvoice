@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  An offerless re-INVITE draws an SDP offer in the 200 of the DUT, and this
+  peer answers it in the ACK.
+
+  The DUT places the call, and this peer then sends a re-INVITE with no body.
+  The 200 must carry an audio offer at a nonzero port (`m=audio <port>
+  RTP/AVP`).
+
+  The two inverse checks on that offer are the resume rule on an active leg.
+  The offer names the real address, and states no one-way direction.
+  Reason: an offer at `c=0.0.0.0` leaves the call with no audio.
+  `uas_legacy_hold.xml` applies the same two checks behind a hold and a
+  resume.
+
+  This peer ends the call with a BYE that uses the URIs and the tag of the
+  first INVITE.
+
+  RFC 3261 section 14.1, RFC 3264 section 6.
+-->
+<scenario name="UAS offerless re-INVITE">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg"
+            assign_to="to_match,local_uri"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp offerless
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="from_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="to_match"
+            check_it="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+
+  <send retrans="500" start_txn="offerless">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="offerless" timeout="10000" rrs="true">
+    <action>
+      <ereg regexp="m=audio[[:space:]]+[1-9][0-9]*[[:space:]]+RTP/AVP"
+            search_in="body" check_it="true" assign_to="sdp_offer"/>
+      <ereg regexp="c=IN IP4 0\.0\.0\.0" search_in="body"
+            check_it_inverse="true" assign_to="offer_zero_addr"/>
+      <ereg regexp="a=(sendonly|inactive|recvonly)" search_in="body"
+            check_it_inverse="true" assign_to="offer_one_way"/>
+    </action>
+  </recv>
+
+  <send ack_txn="offerless">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp offerless answer
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" timeout="10000"/>
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check,sdp_offer,offer_zero_addr,offer_one_way"/>
+</scenario>

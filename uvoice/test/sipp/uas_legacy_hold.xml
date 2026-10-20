@@ -1,0 +1,330 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The hold sequence of a field switch in capture order: after a resume, the
+  DUT must offer its real address and no one-way direction.
+
+  The DUT places the call, and this peer plays the switch. The switch signals
+  hold as `c=IN IP4 0.0.0.0` with no direction attribute, which RFC 3264
+  section 8.4 names as the RFC 2543 hold form.
+
+  Four exchanges follow the answered call, in this order. (a) This peer
+  answers the hold re-INVITE of the DUT (`a=sendonly`) with 200, `c=IN IP4
+  0.0.0.0`, the formats 18 0 8 and no direction attribute. (b) This peer sends
+  its own re-INVITE of that shape, and the DUT must answer 200 `a=inactive` at
+  its own address. (c) This peer answers the resume re-INVITE of the DUT with
+  the same stale hold SDP, which leaves the leg held at the far end. (d) This
+  peer sends an INVITE with no SDP. The 200 must carry an active offer at the
+  real address, and the ACK carries the answer that puts the call back on PCMU
+  `sendrecv`.
+
+  Exchange d carries the resume rule. Reason: a 200 to that INVITE with
+  `c=0.0.0.0` leaves the call with no audio after the resume. The two
+  inverse checks on the 200 of exchange d are the assertion: no zero address,
+  and no one-way direction attribute.
+
+  Two more checks read the codec list of that offer. PCMU and G.729 are both
+  present, so the leg offers its whole list again, not only the codec that the
+  hold answer left it on. Neither check reads the order of the list: the order
+  belongs to the codec sections of the configuration, not to this rule.
+
+  The offer of the DUT states a direction only for a hold (`sdp.c`,
+  `offer_tail_write()`; RFC 4566 section 6 makes `sendrecv` the default). The
+  resume of exchange c therefore carries no direction attribute, and an
+  inverse check reads it.
+
+  The pauses are 50 ms. The capture stands at about 40 ms, which is below the
+  pause resolution of SIPp.
+
+  The subscriber holds and resumes with a flash. The end-to-end flow
+  `legacy-hold` drives both, and reads the leg behind each exchange
+  (`test/e2e/run_e2e.sh`, `legacy_hold_drive()`). The BYE of the DUT ends the
+  call, so the handset ends this scenario.
+
+  RFC 3261 sections 14 and 15, RFC 3264 sections 6.1 and 8.4.
+-->
+<scenario name="UAS RFC 2543 hold, peer hold and offerless resume">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg"
+            assign_to="to_match,local_uri"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp legacy hold
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 0 8
+      a=rtpmap:18 G729/8000
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="from_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="to_match"
+            check_it="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+
+  <!-- Flow a: the hold offer of the DUT, answered in the RFC 2543 form. -->
+  <recv request="INVITE" timeout="60000">
+    <action>
+      <ereg regexp="a=sendonly" search_in="body" check_it="true"
+            assign_to="hold_offer"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp legacy hold
+      c=IN IP4 0.0.0.0
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 0 8
+      a=rtpmap:18 G729/8000
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <pause milliseconds="50"/>
+
+  <!-- Flow b: the hold re-INVITE of the switch itself, on a leg the DUT
+       already holds. The answer has to name the real address of the DUT and
+       read a=inactive, never the zero address of the offer. -->
+  <send retrans="500" start_txn="peerhold">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 3 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp legacy hold
+      c=IN IP4 0.0.0.0
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 0 8
+      a=rtpmap:18 G729/8000
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="peerhold" timeout="10000" rrs="true">
+    <action>
+      <ereg regexp="c=IN IP4 [1-9]" search_in="body" check_it="true"
+            assign_to="peer_hold_addr"/>
+      <ereg regexp="a=inactive" search_in="body" check_it="true"
+            assign_to="peer_hold_dir"/>
+    </action>
+  </recv>
+
+  <send ack_txn="peerhold">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="50"/>
+
+  <!-- Flow c: the resume offer of the DUT, answered with the stale hold SDP
+       the switch answered the hold with. The offer carries no direction
+       attribute, because an offer states one only for a hold. -->
+  <recv request="INVITE" timeout="30000">
+    <action>
+      <ereg regexp="a=(sendonly|inactive|recvonly)" search_in="body"
+            check_it_inverse="true" assign_to="resume_offer"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 4 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp legacy hold
+      c=IN IP4 0.0.0.0
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 0 8
+      a=rtpmap:18 G729/8000
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <pause milliseconds="50"/>
+
+  <!-- Flow d: the INVITE with no SDP. The offer of the DUT rides the 200 and
+       the answer rides the ACK (RFC 3261 section 13.2.1). -->
+  <send retrans="500" start_txn="offerless">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 2 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="offerless" timeout="10000" rrs="true">
+    <action>
+      <ereg regexp="c=IN IP4 [1-9]" search_in="body" check_it="true"
+            assign_to="offerless_addr"/>
+      <ereg regexp="a=rtpmap:0 PCMU" search_in="body" check_it="true"
+            assign_to="offerless_pcmu"/>
+      <ereg regexp="a=rtpmap:18 G729" search_in="body" check_it="true"
+            assign_to="offerless_g729"/>
+      <ereg regexp="c=IN IP4 0\.0\.0\.0" search_in="body"
+            check_it_inverse="true" assign_to="offerless_zero"/>
+      <ereg regexp="a=(sendonly|inactive|recvonly)" search_in="body"
+            check_it_inverse="true" assign_to="offerless_dir"/>
+    </action>
+  </recv>
+
+  <send ack_txn="offerless">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 5 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp legacy hold answer
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="BYE" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check,hold_offer,peer_hold_addr,peer_hold_dir,resume_offer,offerless_addr,offerless_pcmu,offerless_g729,offerless_zero,offerless_dir"/>
+</scenario>

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Support scenario that never runs alone: the consulted peer that never
+  answers, the target of the on-hook transfer of a ringing second call
+  (`xfer-onhook-blind`).
+
+  It rings the call that the DUT places by itself, and answers nothing else.
+  The DUT therefore stays in PROCEEDING until the subscriber goes on hook. It
+  then requires the CANCEL that the on-hook must send on this leg (RFC 3261
+  section 9.1). It answers the CANCEL 200 and the INVITE 487, and takes the
+  ACK of the 487.
+
+  This scenario must never send a 200 to the INVITE: an answered second call
+  is the consult form, which is the `xfer-onhook` flow.
+
+  The CANCEL carries the CSeq number of the INVITE with its own method (RFC
+  3261 section 9.1). The 487 therefore writes the number captured from the
+  INVITE, and the 200 to the CANCEL copies the CSeq of the CANCEL. The To tag
+  of the 487 is the one that the 180 made, the fixed string `sipp-peer-tag`,
+  for the reason that `xfer_peer_ooc.xml` gives.
+
+  A REGISTER that reaches this scenario aborts its instance while it waits for
+  an INVITE. Every UAS flow relies on that absorbed-REGISTER shape
+  (`test/e2e/run_e2e.sh`, `sipp_abort_classify`).
+-->
+<scenario name="Ringing peer, never answers and takes the CANCEL of an on-hook transfer">
+  <recv request="INVITE" timeout="60000" rrs="true">
+    <action>
+      <ereg regexp="([0-9]+)[[:space:]]+INVITE" search_in="hdr" header="CSeq:"
+            check_it="true" assign_to="cseq_match,invite_cseq"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-peer-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- On hook cancels the ringing leg before it refers the held one. -->
+  <recv request="CANCEL" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-peer-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 487 Request Terminated
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-peer-tag
+      [last_Call-ID:]
+      CSeq: [$invite_cseq] INVITE
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <Reference variables="cseq_match,invite_cseq"/>
+</scenario>

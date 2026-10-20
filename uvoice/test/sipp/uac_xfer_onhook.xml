@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The DUT is the transferor of an on-hook consult transfer, and must refer the
+  held leg with a Replaces.
+
+  This peer calls the DUT, and the call is answered. The subscriber then
+  flashes, and dials the consult code and a second number. That call comes
+  back to this process, and the out-of-call peer `xfer_replaced_ooc.xml`
+  answers it (`SIPP_OOC_SCENARIO`, `SIPP_SERVICE`). The subscriber goes on
+  hook with both calls up.
+
+  The hold re-INVITE must carry `a=sendonly` or `a=inactive`, and this peer
+  answers 200 with recvonly. The REFER uses the held leg, which is this
+  dialog, and the scenario waits up to 60000 ms for it. Its Refer-To must
+  contain a Replaces. The Refer-To names the remote target of the other call.
+  The DUT escapes the dialog of that call into a Replaces URI header (RFC 3515
+  section 2.4.2, RFC 3891 section 3).
+
+  The transfer does not wait for its outcome at the machine, because the
+  subscriber is already on hook. The call layer keeps the order of RFC 5589
+  section 7.1. The DUT sends BYE on this leg, the
+  referee, only after the NOTIFY that reports the sipfrag 2xx. This scenario
+  therefore answers the REFER 202, and sends that NOTIFY (RFC 3515 section
+  2.4.5, with the Contact that RFC 6665 section 8.6 asks for). It requires the
+  200 of the NOTIFY, and only then takes the BYE.
+
+  A BYE before the NOTIFY is the unexpected message that fails the scenario.
+  Reason: that BYE ends the dialog, and the DUT then answers the NOTIFY 481.
+  The DUT does not send BYE on the other leg. The consulted peer,
+  `xfer_replaced_ooc.xml`, ends that dialog itself, as the network does after
+  the referred party replaced it (RFC 5589).
+
+  The harness checks the Refer-To byte for byte, escaping and orientation
+  included (`test/e2e/run_e2e.sh`, `xfer_hdr_match_check`). The scenario
+  carries no `rtp_echo`, by the stream-scenario rule of `test/e2e/README.md`.
+-->
+<scenario name="UAC on-hook consult, the DUT refers the held leg and BYEs it after the verdict">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true"/>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The hook flash holds this call before the consult code is dialled. -->
+  <recv request="INVITE" timeout="30000">
+    <action>
+      <ereg regexp="a=sendonly|a=inactive" search_in="body" check_it="true"
+            assign_to="hold_dir"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=recvonly
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The referral of a consult carries the other call inside its Refer-To. -->
+  <recv request="REFER" timeout="60000">
+    <action>
+      <ereg regexp="Replaces" search_in="hdr" header="Refer-To:"
+            check_it="true" assign_to="refer_replaces"/>
+      <ereg regexp="([0-9]+)" search_in="hdr" header="CSeq:"
+            check_it="true" assign_to="refer_cseq_hdr,refer_cseq"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 202 Accepted
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The verdict of the implicit subscription (RFC 3515 2.4.5): the id is
+       the CSeq of the REFER, the body the sipfrag 2xx. This side is the UAC of
+       the dialog, so the request carries its own From tag and the DUT's To
+       tag, the orientation of every request it sent. -->
+  <send retrans="500">
+    <![CDATA[
+      NOTIFY [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 NOTIFY
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Event: refer;id=[$refer_cseq]
+      Subscription-State: terminated;reason=noresource
+      Content-Type: message/sipfrag;version=2.0
+      [routes]
+      Content-Length: [len]
+
+      SIP/2.0 200 OK
+    ]]>
+  </send>
+
+  <recv response="200" timeout="10000"/>
+
+  <!-- The BYE of the referee follows the verdict, never precedes it: one
+       grace behind the 200 to the NOTIFY, because this peer sends none of
+       its own. -->
+  <recv request="BYE" timeout="30000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The consulted peer ends the other leg twelve seconds after it answered
+       it, and SIPp leaves once this call is done, tearing the peer's instance
+       down before it sent that BYE: this call stays up past that exchange. -->
+  <pause milliseconds="20000"/>
+
+  <Reference variables="hold_dir,refer_replaces,refer_cseq_hdr,refer_cseq"/>
+</scenario>

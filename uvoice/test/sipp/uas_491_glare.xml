@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  A dialog that the DUT owns retries its re-INVITE 2.1 to 4.0 seconds after a
+  491.
+
+  The DUT places the call, and this peer answers its first re-INVITE with 491
+  Request Pending. The receive of the retry waits 6000 ms at most. The BYE of
+  this peer uses the URIs and the tag that the first INVITE carried.
+
+  `run_sipp.sh` checks the delay from the packet timestamps.
+  `timing_491_check()` reads the 491 and the retry INVITE with tshark, and
+  requires 2.1 to 4.0 seconds between them. The scenario therefore needs
+  tcpdump and tshark, and fails without them.
+
+  RFC 3261 section 14.1.
+-->
+<scenario name="UAS 491 re-INVITE glare">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg"
+            assign_to="to_match,local_uri"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp glare
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="from_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="to_match"
+            check_it="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+  <recv request="INVITE" timeout="30000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 491 Request Pending
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+  <recv request="INVITE" timeout="6000"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp glare retry
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <send retrans="500">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" timeout="10000"/>
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check"/>
+</scenario>

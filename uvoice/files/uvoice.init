@@ -1,0 +1,369 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# uvoice - native voice stack for OpenWrt
+# Copyright (C) 2026 Adtran Inc.
+# Author: Chad Monroe <chad.monroe@adtran.com>
+#
+# Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+#
+#################################################################################
+# uvoice procd init
+#
+# The daemon owns the voice hardware, and two voice stacks cannot share it, so
+# this script must stay inert unless the platform selects the uvoice stack. The gate
+# runs in boot() and in start_service() because a manual "service uvoice start"
+# must be gated too.
+#
+# The stack answer is voice_stack_get from voice-scripts voice-stack.sh, which
+# reads PDB_VOICE_STACK from platformdb. Lab A/B switches by editing the PDB.
+#################################################################################
+
+START=96
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/sbin/uvoiced
+STACK_NAME=uvoice
+STACK_LIB=/usr/srg/scripts/voice-stack.sh
+PLATFORMDB=/usr/srg/scripts/platformdb
+
+action_arg=$action
+mypid=$$
+
+log_info() {
+	logger -p info -t uvoice -- "(${mypid}:${action_arg}): $@"
+}
+
+log_crit() {
+	logger -p crit -t uvoice -- "(${mypid}:${action_arg}): $@"
+	echo "$@" >&2
+}
+
+# The stub and CI image shapes carry neither voice-scripts nor a platform
+# database, so a missing helper means the stack answer is none and this
+# script stays inert.
+if [ -r "$STACK_LIB" ]; then
+	. "$STACK_LIB"
+else
+	voice_stack_get() { echo none; }
+fi
+
+stack_owned() {
+	local stack
+
+	stack="$(voice_stack_get)"
+	if [ "$stack" != "$STACK_NAME" ]; then
+		log_info "voice stack '$stack', uvoice inert"
+		return 1
+	fi
+
+	return 0
+}
+
+#################################################################################
+# The softDSP platform preparation and its two gates.
+#
+# The udsp HAL backend opens an ALSA front end and a spidev, and the board has
+# to be routed and wired for both before uvoiced starts. The AN7581 boards run
+# udsp, as the MediaTek boards do. A stub image needs none of it, so the steps
+# run only when this image carries the softDSP stack.
+#
+# The gate is the SLIC plug-in file, not a uci option: the voip.hal section is
+# part of the shipped schema and is seeded on every board, so an option would
+# read true on a stub image as well, while the plug-in .so is installed by the
+# udsp packages alone. The configured path wins over the built-in one, so a lab
+# build that stages the plug-in elsewhere is still recognized. The spidev test
+# is the second half: a board with the packages but no SLIC bus has nothing to
+# prepare.
+#################################################################################
+UDSP_PLUGIN=/usr/lib/udsp/udsp-slic-proslic-mt798x.so
+
+udsp_stack_present() {
+	local plugin dev
+
+	plugin="$(uci -q get voip.hal.slic_plugin)"
+	# 'none' is the schema sentinel cfg/uci.c opt_str_none() maps to the
+	# empty path, which selects the in-tree fake backend: that daemon
+	# touches no hardware, so there is no board to route or wire. Only an
+	# absent value takes the built-in path.
+	[ "$plugin" = 'none' ] && return 1
+	[ -n "$plugin" ] || plugin="$UDSP_PLUGIN"
+	[ -f "$plugin" ] || return 1
+
+	for dev in /dev/spidev*; do
+		[ -c "$dev" ] && return 0
+	done
+
+	return 1
+}
+
+# The DPCM switches connect the AFE front end to the PCM highway. Without them
+# the front end open fails EINVAL and the engine never ticks. A missing
+# control is logged and not fatal: a board may route the same path under
+# other names, and refusing to start uvoiced over a mixer name would take the
+# line down for a fault the daemon reports itself.
+udsp_dpcm_route() {
+	local model sw
+
+	model="$( . "$PLATFORMDB" >/dev/null 2>&1; echo "$PDB_DEVICE_MODEL" )"
+	case "$model" in
+	834-v6|854-v6)
+		amixer -q -c 0 cset name='O00 I00 Switch' on >/dev/null 2>&1 || \
+			log_info "amixer 'O00 I00 Switch' not set, the audio front end may refuse to open"
+		amixer -q -c 0 cset name='O01 I01 Switch' on >/dev/null 2>&1 || \
+			log_info "amixer 'O01 I01 Switch' not set, the audio front end may refuse to open"
+		amixer -q -c 0 cset name='O15 I12 Switch' on >/dev/null 2>&1 || \
+			log_info "amixer 'O15 I12 Switch' not set, the audio front end may refuse to open"
+		amixer -q -c 0 cset name='O16 I13 Switch' on >/dev/null 2>&1 || \
+			log_info "amixer 'O16 I13 Switch' not set, the audio front end may refuse to open"
+		;;
+	SDG-P72v-Plus*|SDG-P73v-Ultra*)
+		# The an7581-si3218x card has no DPCM switches: the EN7581 PCM
+		# engine feeds the SLIC highway directly, so there is nothing to
+		# route and the MT798x names below would only log misses. The
+		# prefix covers the ETH-WAN alias boards (engnums 1600/1601).
+		;;
+	*)
+		for sw in 'O018 I150_Switch' 'O019 I151_Switch' \
+			  'O124 I032_Switch' 'O125 I033_Switch'; do
+			amixer -q sset "$sw" on >/dev/null 2>&1 || \
+				log_info "amixer '$sw' not set, the audio front end may refuse to open"
+		done
+		;;
+	esac
+}
+
+# The PCM interrupt must not land on the engine CPU: the tick runs there with a
+# 10 ms period and an interrupt on the same core costs jitter the buffer then
+# has to absorb. The irq is found by its action name in /proc/interrupts, and
+# the mask is every CPU except the one voip.hal.engine_cpu names.
+# The value must be the one the daemon read, not a different one. cfg/uci.c
+# opt_int() takes the schema default for an option that is absent or
+# unparsable, and int_clamp() holds the rest inside the schema range; a script
+# that read 0 where uvoiced read 3 would move the interrupt onto the engine CPU
+# instead of off it. The default and the range below are voip.hal.engine_cpu in
+# cfg/schema.h.
+UDSP_ENGINE_CPU_DEFAULT=3
+UDSP_ENGINE_CPU_MIN=-1
+UDSP_ENGINE_CPU_MAX=255
+
+udsp_engine_cpu_get() {
+	local cpu sign digits limit
+
+	cpu="$(uci -q get voip.hal.engine_cpu)"
+
+	# int_parse() is strtol based, and strtol skips leading whitespace
+	# before it reads the sign, so the same characters come off here.
+	cpu="${cpu#"${cpu%%[![:space:]]*}"}"
+
+	# Then an optional sign. A plus is dropped, as strtol drops it.
+	sign=''
+	case "$cpu" in
+	-*) sign='-'; cpu="${cpu#-}" ;;
+	+*) cpu="${cpu#+}" ;;
+	esac
+
+	# Then digits and nothing else: int_parse() rejects the whole value for
+	# any trailing character, a trailing space included. The leading zeros
+	# come off the rest, because the comparisons below read "0009" as octal
+	# while strtol(base 10) reads it as nine.
+	digits="$cpu"
+	case "$digits" in
+	''|*[!0-9]*)
+		digits=''
+		;;
+	*)
+		while [ "$digits" != "${digits#0}" ]; do
+			digits="${digits#0}"
+		done
+		[ -n "$digits" ] || digits='0'
+		;;
+	esac
+
+	# The int range is compared as text, so no shell arithmetic has to
+	# hold the value: the magnitude limit is INT_MAX for a positive value
+	# and the magnitude of INT_MIN for a negative one. int_parse() rejects
+	# anything wider and opt_int() then takes the default. Neither string
+	# carries a leading zero here, so the longer one is the larger one and
+	# equal lengths compare as text.
+	limit='2147483647'
+	[ "$sign" = '-' ] && limit='2147483648'
+	if [ "${#digits}" -gt "${#limit}" ]; then
+		digits=''
+	elif [ "${#digits}" = "${#limit}" ] && [ "$digits" \> "$limit" ]; then
+		digits=''
+	fi
+
+	# opt_int() gives an absent or unparsable option the schema default.
+	if [ -z "$digits" ]; then
+		echo "$UDSP_ENGINE_CPU_DEFAULT"
+		return 0
+	fi
+
+	# strtol reads "-0" as 0, so the sign goes with the zeros.
+	[ "$digits" = '0' ] && sign=''
+	cpu="$sign$digits"
+
+	# int_clamp() holds the parsed value inside the schema range.
+	if [ "$cpu" -lt "$UDSP_ENGINE_CPU_MIN" ]; then
+		cpu="$UDSP_ENGINE_CPU_MIN"
+	fi
+	if [ "$cpu" -gt "$UDSP_ENGINE_CPU_MAX" ]; then
+		cpu="$UDSP_ENGINE_CPU_MAX"
+	fi
+
+	echo "$cpu"
+}
+
+udsp_cpu_count_get() {
+	local cpus
+
+	cpus="$(grep -c '^processor' /proc/cpuinfo)"
+	[ "$cpus" -gt 0 ] 2>/dev/null || cpus=1
+	echo "$cpus"
+}
+
+# The hex mask of every CPU except the engine CPU, or nothing when there is
+# no engine CPU to keep clear: pinning off (-1), an engine CPU the box does
+# not have, or a single CPU.
+udsp_other_cpus_mask_get() {
+	local engine_cpu cpus mask
+
+	engine_cpu="$(udsp_engine_cpu_get)"
+	[ "$engine_cpu" -ge 0 ] || return 0
+
+	cpus="$(udsp_cpu_count_get)"
+	[ "$engine_cpu" -lt "$cpus" ] || return 0
+	[ "$cpus" -gt 1 ] || return 0
+
+	mask=$(( ((1 << cpus) - 1) - (1 << engine_cpu) ))
+	[ "$mask" -gt 0 ] || return 0
+	printf '%x' "$mask"
+}
+
+udsp_pcm_irq_move() {
+	local engine_cpu mask irq
+
+	engine_cpu="$(udsp_engine_cpu_get)"
+	mask="$(udsp_other_cpus_mask_get)"
+	[ -n "$mask" ] || return 0
+
+	# Both mt7986-afe-pcm.c and mt2701-afe-pcm.c request "asys-isr". The
+	# AN7581 "PCM1" action name matches /pcm/.
+	for irq in $(awk 'tolower($0) ~ /pcm|afe|asys/ { sub(":", "", $1); print $1 }' \
+		     /proc/interrupts); do
+		echo "$mask" > "/proc/irq/$irq/smp_affinity" 2>/dev/null || \
+			log_info "irq $irq affinity not moved off cpu $engine_cpu"
+	done
+}
+
+# Unbound kernel work must not land on the engine CPU either. The kernel's
+# wq_unbound_cpumask governs every unbound workqueue, and a vendor work item
+# on the AN7581 (the PPE table scan of arht_ppe.c) holds a CPU for 55 to
+# 61 ms with no preemption point. The tick waits out
+# that hold whole when the work lands on the engine CPU. The mask reaches the
+# unbound workqueues and their rescuer threads. It does not reach the per-CPU
+# workqueues, softirqs or the threaded NAPI kthreads. It is system-wide and
+# one-way, so a box whose pinning is off gets the full mask back rather than
+# the narrowed one a previous start left.
+UDSP_WORKQUEUE_CPUMASK=/sys/devices/virtual/workqueue/cpumask
+
+udsp_workqueue_move() {
+	local mask cpus
+
+	[ -w "$UDSP_WORKQUEUE_CPUMASK" ] || return 0
+
+	mask="$(udsp_other_cpus_mask_get)"
+	if [ -z "$mask" ]; then
+		cpus="$(udsp_cpu_count_get)"
+		mask="$(printf '%x' $(( (1 << cpus) - 1 )))"
+	fi
+	printf '%s' "$mask" > "$UDSP_WORKQUEUE_CPUMASK" 2>/dev/null || \
+		log_info "unbound workqueue cpumask $mask not applied"
+}
+
+start_service() {
+	local pots
+
+	stack_owned || return 0
+	if [ -r "$PLATFORMDB" ]; then
+		pots="$( . "$PLATFORMDB" >/dev/null 2>&1; echo "${PDB_NUM_POTS:-1}" )"
+	else
+		pots=1
+	fi
+
+	if udsp_stack_present; then
+		udsp_dpcm_route
+		udsp_pcm_irq_move
+		udsp_workqueue_move
+	fi
+
+	# The daemon runs whenever the stack is ours. It stays idle when
+	# voip.base.enabled is 0 and reports that over ubus.
+	procd_open_instance
+	procd_set_param command "$PROG" -S
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param limits core="unlimited"
+	procd_set_param env PDB_NUM_POTS="$pots"
+	procd_close_instance
+
+	log_info "uvoiced started"
+}
+
+stop_service() {
+	log_info "uvoiced stopped"
+}
+
+# Whether procd runs a uvoiced instance now. The answer is no while a stop
+# runs, between the stop and the start of a restart, and while the service is
+# stopped.
+instance_running() {
+	ubus -t 2 call service list '{"name":"uvoice"}' 2>/dev/null |
+		grep -q '"running": *true'
+}
+
+# The reload of a running daemon. A daemon that procd just started publishes
+# its object a moment later, so the call waits for the object first.
+reload_call() {
+	ubus -t 10 wait_for voice >/dev/null 2>&1 &&
+		ubus -t 5 call voice reload >/dev/null 2>&1
+}
+
+# procd runs this trigger on every voip commit, also while a stop or a start
+# of the service runs. A start reads the committed config itself, and a
+# stopped service is not this trigger's to start, so a reload finds a running
+# instance or does nothing. A restart here drops both registrations and any
+# call, so it is left to a running daemon that refuses the reload twice.
+reload_service() {
+	stack_owned || return 0
+
+	local try
+
+	for try in 1 2; do
+		if ! instance_running; then
+			log_info "uvoiced not running, its start reads the config"
+			return 0
+		fi
+		if reload_call; then
+			log_info "config reloaded through ubus"
+			return 0
+		fi
+		[ "$try" = 1 ] && sleep 1
+	done
+
+	log_crit "ubus reload failed, restarting uvoiced"
+	restart
+}
+
+service_triggers() {
+	procd_add_reload_trigger "voip"
+}
+
+boot() {
+	stack_owned || return 0
+
+	start
+}

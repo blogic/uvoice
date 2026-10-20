@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The DUT offers SDES SRTP on an outbound call with two crypto suites, and
+  this peer mirrors one of them.
+
+  The DUT runs with `srtp_enabled` 1. Its INVITE must carry RTP/SAVP and
+  exactly two crypto attributes: tag 1 with AES_CM_128_HMAC_SHA1_80, and tag 2
+  with AES_CM_128_HMAC_SHA1_32. Each has a 40-character inline key and no
+  session parameters. An inverse check requires that no `a=crypto:3` appears.
+
+  This peer answers RTP/SAVP with one crypto attribute that mirrors tag 1 and
+  carries a fixed key. The runner can then compute the digest that the DUT
+  programs its receive direction with.
+
+  The key is the 30 ASCII bytes `uvoice-srtp-e2e-uas-answer-k01`. A fixed
+  readable key makes the end-to-end digest assertion possible. Its zlib crc32
+  is a constant that the runner recomputes.
+
+  No `rtp_echo` runs in this scenario. The stream of this call is encrypted on
+  the wire, and SIPp echoes plain RTP, so an echo would prove nothing. The
+  stub backend carries no media plane at all. A hardware test against a live
+  provider checks the wire crypto.
+
+  The check ends each key on the carriage return, not on a control class. SIPp
+  honors `\r` and `\n` in a regexp attribute: measured, `...{40}\r\na=crypto:2
+  AES` matches the real CRLF between the two attributes. SIPp decodes no XML
+  character reference, so `&#13;` reaches the engine as five literal
+  characters. It compiles without REG_NEWLINE, so `$` anchors at the end of
+  the whole body, not at a line end. A `[[:cntrl:]]` class would accept HTAB,
+  and a tab-separated session parameter would then read as a line end.
+
+  The end-to-end flow `srtp-outbound` counts the crypto attributes, not this
+  file. A regex cannot count, so a duplicate tag, or an attribute under a tag
+  that nobody offered, passes every check that this file can write.
+
+  RFC 3261 sections 13 and 15, RFC 4568 sections 5.1.1 and 6.
+-->
+<scenario name="UAS SRTP call with peer BYE">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="m=audio[[:space:]]+[1-9][0-9]*[[:space:]]+RTP/SAVP"
+            search_in="body" assign_to="savp_offer"/>
+      <ereg regexp="a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:[A-Za-z0-9+/]{40}\r"
+            search_in="body" assign_to="crypto_tag1"/>
+      <ereg regexp="a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:[A-Za-z0-9+/]{40}\r"
+            search_in="body" assign_to="crypto_tag2"/>
+      <!-- exactly two attributes: the offer names two suites and stops -->
+      <ereg regexp="a=crypto:3" search_in="body"
+            assign_to="crypto_no_third"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp SRTP call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/SAVP 0 101
+      a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:dXZvaWNlLXNydHAtZTJlLXVhcy1hbnN3ZXItazAx
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="savp_offer"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="crypto_tag1"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="crypto_tag2"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="crypto_no_third"
+            check_it_inverse="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+
+  <pause milliseconds="5000"/>
+
+  <recv request="BYE" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check"/>
+</scenario>

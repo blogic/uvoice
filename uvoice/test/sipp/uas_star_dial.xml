@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The switch side of a star string that the DUT dials through: the code
+  arrives as a second INVITE, and no REFER leaves the DUT.
+
+  The DUT places a call, holds it, and dials a transfer code that its config
+  does not carry (`star_codes_local`). The code is a
+  plain star string to the dial plan. It therefore arrives as a second INVITE
+  whose request URI carries the whole string.
+
+  One file serves both calls. The first call sees the hold re-INVITE of the
+  flash, and this peer answers it `recvonly`. The second call, the star
+  string, sees no hold and ends on the BYE of the DUT. The optional receives
+  choose the branch, and every branch ends on the BYE that the on-hook sends
+  to both legs. This peer also answers a resume re-INVITE in front of the BYE,
+  so it requires no order that the machine does not promise.
+
+  `test/e2e/run_e2e.sh` checks the request line of the second INVITE off the
+  message log, as the transfer flows check their headers (flow `star-network`,
+  `star_network_run()`).
+
+  The scenario carries no `rtp_echo`, the rule for stream scenarios in
+  `test/e2e/README.md`, section "The two SIPp builds".
+-->
+<scenario name="UAS star string dialled through, two calls on one peer">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- the first call is held by the flash; the second call is not -->
+  <recv request="INVITE" optional="true" next="hold" timeout="60000"/>
+
+  <recv request="BYE" timeout="60000" next="bye"/>
+
+  <label id="hold"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=recvonly
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- a resume in front of the hangup, if the machine sends one -->
+  <recv request="INVITE" optional="true" next="resume" timeout="60000"/>
+
+  <recv request="BYE" timeout="60000" next="bye"/>
+
+  <label id="resume"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 3 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <recv request="BYE" timeout="60000"/>
+
+  <label id="bye"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <label id="registered_done"/>
+  <Reference variables="register_via"/>
+</scenario>

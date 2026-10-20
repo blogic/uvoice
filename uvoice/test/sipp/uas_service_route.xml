@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  A registrar that grants a service route, and the DUT call behind it: the
+  INVITE must carry the two hops as Route headers, in order.
+
+  The 200 to the REGISTER carries one Service-Route header with two loose hops
+  behind one comma: `<sip:sbc1.example.net:5065;lr>` and
+  `<sip:sbc2.example.net:5065;lr>`. The INVITE then carries those hops as
+  Route headers, in the order that the registrar wrote them (RFC 3608 sections
+  5.1 and 6.1).
+
+  The registrar challenges the INVITE 407 first, which is the field exchange:
+  the capture connects only after a credential exchange. The
+  route belongs to every build of the request, so the retry carries it again,
+  with the nonce `uvoice-route-nonce` in its Proxy-Authorization. The ACK of
+  the 407 carries the route too, because that ACK mirrors the request that it
+  answers (`src/proto/sip/call.c`, `req_mirror_build`).
+
+  One scenario must answer both requests. The DUT places the call from a
+  registered line, so this scenario must answer the registration. SIPp takes
+  an out-of-call scenario in UAC mode alone, so a UAS run has exactly one
+  scenario for every request that reaches it. The two requests carry different
+  Call-IDs and open two instances of this one scenario. The first receive
+  therefore matches a regular expression over the two method names (SIPp 3.7.3
+  `call.cpp`, `matches_scenario` with `regexp_match`).
+
+  The receive itself carries the branch. A `nop` behind a checking receive
+  erases the failure of its check (`test/sipp/README.md`, "When a failed check
+  is judged").
+
+  The two hops name a host of their own and carry a port of their own, which
+  is the shape of the field message. Its Route named the SBC of
+  SRV priority 0, while the INVITE went to the SBC of priority 1. uvoice never
+  resolves a hop name and never moves the next hop for one
+  (`src/proto/sip/reg.h`). The INVITE reaches this scenario however the hops
+  read. A DUT that took a hop as its destination would lose the INVITE here.
+
+  The check on the first INVITE reads a variable, not the message. The action
+  list of the first receive runs for the REGISTER too. A Route header on a
+  REGISTER is a defect too, so a `check_it` there would fail the registration
+  instance. The first receive therefore captures the header
+  value without a check, and the ACK of the 2xx checks that value. The
+  registration branch never reaches that ACK. The retry INVITE and the ACK of
+  the 407 arrive in the call branch alone, so they check their own header.
+
+  One `ereg` reads one header line. The harness checks the second hop, the hop
+  count and the order off the SIPp message log (`test/e2e/run_e2e.sh`,
+  `route_hdr_check`, flow `service-route-present`). `run_sipp.sh` also reads
+  the message log, and requires every INVITE of the DUT to carry the two hops
+  in order (`service_route_msg_check()`).
+
+  The Contact is echoed, not written, as `test/e2e/register_ooc.xml` echoes
+  it: a registrar answers the binding that it was given.
+
+  It carries no `rtp_echo`. The flow behind it asserts signaling and daemon
+  state alone (`test/e2e/README.md`, section "The two SIPp builds").
+-->
+<scenario name="UAS registration with a service route and the call behind it">
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="&lt;[^&gt;]*&gt;" search_in="hdr" header="Route:"
+            start_line="true" assign_to="route_first"/>
+    </action>
+  </recv>
+
+  <send next="done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      Service-Route: <sip:sbc1.example.net:5065;lr>, <sip:sbc2.example.net:5065;lr>
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 407 Proxy Authentication Required
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Proxy-Authenticate: Digest realm="uvoice.example", nonce="uvoice-route-nonce", opaque="uvoice-opaque-route", algorithm=MD5
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="^[[:space:]]*&lt;sip:sbc1\.example\.net:5065;lr&gt;$"
+            search_in="hdr" header="Route:" start_line="true"
+            check_it="true" assign_to="chal_ack_route"/>
+    </action>
+  </recv>
+
+  <recv request="INVITE" timeout="30000">
+    <action>
+      <ereg regexp="nonce[[:space:]]*=[[:space:]]*&quot;uvoice-route-nonce&quot;"
+            search_in="hdr" header="Proxy-Authorization:" check_it="true"
+            assign_to="retry_credentials"/>
+      <ereg regexp="^[[:space:]]*&lt;sip:sbc1\.example\.net:5065;lr&gt;$"
+            search_in="hdr" header="Route:" start_line="true"
+            check_it="true" assign_to="route_retry"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[media_ip_type] [media_ip]
+      s=uvoice SIPp service route call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="^&lt;sip:sbc1\.example\.net:5065;lr&gt;$" search_in="var"
+            variable="route_first" check_it="true" assign_to="route_first_ok"/>
+      <ereg regexp="." search_in="hdr" header="Route:" start_line="true"
+            check_it_inverse="true" assign_to="ack_route_seen"/>
+    </action>
+  </recv>
+
+  <recv request="BYE" timeout="60000">
+    <action>
+      <ereg regexp="." search_in="hdr" header="Route:" start_line="true"
+            check_it_inverse="true" assign_to="bye_route_seen"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="done"/>
+
+  <Reference variables="chal_ack_route,retry_credentials,route_retry,route_first_ok,ack_route_seen,bye_route_seen"/>
+</scenario>

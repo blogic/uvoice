@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The calling side of an answer tone from the wire with no upspeed behind it:
+  the DUT keeps its committed codec and sends no offer.
+
+  This scenario answers the DUT call with PCMU and telephone-event, so the
+  offer of the DUT must carry PCMU. The scenario then sends nothing for
+  sixteen seconds. A calling gateway sees this media when a proxy answers the
+  far-end upspeed itself and passes no offer through, as Asterisk can do. The
+  answer tone that the runner reports from the wire is then the only evidence
+  that this side gets.
+
+  Two end-to-end flows run this scenario. They differ in what the runner
+  reports inside the quiet window, and the wire is the same for both.
+
+  In the flow uas_far_fax_tone_g711, the runner reports the answer tone alone.
+  The DUT must put the modem media policy on the stream that it already runs.
+  The codec belongs to the SIP layer, and the far end never moves it in this
+  call. ITU-T V.152 clauses 10.1.1 and 10.3 permit the local transition on a
+  stimulus from the other feed.
+
+  In the flow uas_far_fax_tone_false, the runner then reports the end row of
+  that tone, with a duration under the 2.6 s floor of ITU-T T.30 4.1.1. The
+  DUT must wait out its own deferral and put the leg back on the voice media
+  policy. The stream then carries no kind, the jitter buffer is adaptive
+  again, and the line releases its tone disabler.
+
+  The DUT sends no offer of its own in either flow, so the return to voice
+  also spends nothing on the wire. An in-dialog INVITE from the DUT fails the
+  run. The receive of the quiet window takes any such INVITE. Its inverse
+  check marks the call failed, so the count of successful calls that the
+  harness reads stays short. The jump on the timeout of that receive is the
+  passing path.
+
+  The window starts at the ACK. The runner reaches the tone and reads the kind
+  back some time behind it. The part of the window after the kind is therefore
+  shorter than the timeout. The runner measures that part, from the stub
+  sample that confirms the kind to the BYE of this scenario. It fails the flow
+  when that part is under eight seconds.
+
+  RFC 3264 section 8, ITU-T T.30 4.1.1, ITU-T V.25 2.2.
+-->
+<scenario name="UAS answered call through a remote answer tone with no upspeed">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg"
+            assign_to="to_match,local_uri"/>
+      <!-- the answer below selects PCMU, so the offer has to carry it -->
+      <ereg regexp="a=rtpmap:0 PCMU/8000" search_in="body"
+            assign_to="voice_offer"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp far fax tone
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="from_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="to_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="voice_offer"
+            check_it="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+
+  <!-- The quiet window, and the whole assertion of this scenario on the wire.
+       It runs sixteen seconds from the ACK, which leaves the runner its eight
+       after the answer tone, and in the false flow after the end row and the
+       deferral behind them too, on a loaded host; the runner measures what it
+       got and fails the flow on a short one. This receive exists to take an
+       in-dialog INVITE and fail the call on it through the inverse check; the
+       jump on its timeout is the passing path, and it costs one warning line
+       in the error log. -->
+  <recv request="INVITE" timeout="16000" ontimeout="quiet">
+    <action>
+      <ereg regexp="^INVITE" search_in="msg" check_it_inverse="true"
+            assign_to="dut_offer"/>
+    </action>
+  </recv>
+
+  <!-- The call is already failed. The refusal closes the transaction the DUT
+       opened, so the message log of a failing run carries one offer instead of
+       a retransmission burst. -->
+  <send>
+    <![CDATA[
+      SIP/2.0 488 Not Acceptable Here
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="5000" ontimeout="quiet"/>
+
+  <label id="quiet"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check,dut_offer"/>
+</scenario>

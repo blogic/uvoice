@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The registrar of a field sequence: it grants a ten-second
+  binding, goes silent for one refresh, and answers again.
+
+  Every REGISTER of one line carries the same Call-ID. SIPp routes the whole
+  sequence into one scenario instance, so the five exchanges are one call.
+
+  The third receive is the outage: it takes the refresh and answers nothing.
+  The retransmissions behind it repeat the whole text (RFC 3261 section
+  17.1.2.2). SIPp drops a copy of the message that it received last (SIPp
+  3.7.3 `src/call.cpp`, the `last_recv_hash` branch of `process_incoming`).
+  The copies never reach the next receive, so the silence needs no pause and
+  no restart of SIPp. The fourth receive takes the REGISTER that the address
+  change produces, whose text differs, and the exchange runs again.
+
+  Each answer names the binding that the registrar holds, not the one that it
+  was asked to drop. A REGISTER that moves the Contact carries two of them:
+  the new binding, and the old one with `expires=0`. `[last_Contact:]` would
+  echo both. The capture takes the first Contact line alone, which is the new
+  binding (`src/proto/sip/reg.c`, `wire_build` writes it first).
+
+  The responses echo the Via unchanged. A `received` or `rport` parameter
+  would move the Contact of the DUT to the mapping that the registrar reports
+  (RFC 3581). This scenario is about the address that the interface gave the
+  DUT.
+
+  RFC 3261 sections 10.2 and 10.3.
+-->
+<scenario name="UAS REGISTER through a registrar outage">
+  <recv request="REGISTER" timeout="60000">
+    <action>
+      <ereg regexp="&lt;[^&gt;]*&gt;" search_in="hdr" header="Contact:"
+            check_it="true" assign_to="binding"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: [$binding]
+      Expires: 10
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="REGISTER" timeout="60000">
+    <action>
+      <ereg regexp="&lt;[^&gt;]*&gt;" search_in="hdr" header="Contact:"
+            check_it="true" assign_to="binding"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: [$binding]
+      Expires: 10
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- the outage: the refresh arrives and the registrar says nothing -->
+  <recv request="REGISTER" timeout="60000"/>
+
+  <recv request="REGISTER" timeout="60000">
+    <action>
+      <ereg regexp="&lt;[^&gt;]*&gt;" search_in="hdr" header="Contact:"
+            check_it="true" assign_to="binding"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: [$binding]
+      Expires: 10
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="REGISTER" timeout="60000">
+    <action>
+      <ereg regexp="&lt;[^&gt;]*&gt;" search_in="hdr" header="Contact:"
+            check_it="true" assign_to="binding"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: [$binding]
+      Expires: 10
+      Content-Length: 0
+
+    ]]>
+  </send>
+</scenario>

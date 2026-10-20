@@ -1,0 +1,15 @@
+CRCX 1206 aaln/1@rgw-2569.whatever.net MGCP 1.0
+K: 1205
+C: A3C47F21456789F0
+L: p:10, a:PCMU;G729, e:on, x+vendor:1
+M: inactive
+N: ca@ca1.whatever.net:5678
+X: 0123456789AD
+
+v=0
+o=- 25678 753849 IN IP4 128.96.41.1
+s=-
+c=IN IP4 128.96.41.1
+t=0 0
+m=audio 3456 RTP/AVP 0 18
+a=ptime:20

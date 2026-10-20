@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  A registrar that refuses the credential of the DUT: the bad password case.
+  The first REGISTER gets a 401 digest challenge. The retry must
+  carry an Authorization that starts with `Digest`, and this peer answers it
+  403. The DUT then holds no binding, so its seize plays reorder.
+
+  RFC 3261 sections 21.4.4 and 22.4.
+-->
+<scenario name="UAS REGISTER refused 403 after the challenge">
+  <recv request="REGISTER" timeout="60000">
+    <action>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:" check_it="true"
+            assign_to="via_match,via_transport,via_sent_by,via_branch"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 401 Unauthorized
+      Via: SIP/2.0/[$via_transport] [$via_sent_by];branch=[$via_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      WWW-Authenticate: Digest realm="uvoice.test", nonce="uvoice-403-nonce", algorithm=MD5
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="REGISTER" timeout="30000">
+    <action>
+      <ereg regexp="Digest[[:space:]]"
+            search_in="hdr" header="Authorization:"
+            check_it="true" assign_to="authorization_digest"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:" check_it="true"
+            assign_to="via_match,via_transport,via_sent_by,via_branch"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 403 Forbidden
+      Via: SIP/2.0/[$via_transport] [$via_sent_by];branch=[$via_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="via_match,authorization_digest"/>
+</scenario>

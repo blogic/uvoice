@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The out-of-call registrar of a caller whose DUT line must stay without a
+  binding: every REGISTER gets 403. A plain 403 is a credential failure too,
+  so a retry that arrives while the caller runs does not register the line.
+-->
+<scenario name="REGISTER out-of-call refusal">
+  <recv request="REGISTER"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 403 Forbidden
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-register
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+    ]]>
+  </send>
+</scenario>

@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Host only, not verified live: checks that a DUT with an Opus codec section
+  answers Opus when the offer lists it first. The answer must use the one
+  clock that RFC 7587 allows and the fmtp of this side's own decoder. Its
+  telephone-event must use the stream clock.
+
+  The offer lists Opus (dynamic payload type 96), PCMU, and both
+  telephone-event clocks: 101 at 8000 and 102 at 48000. RFC 3264 section 6.1
+  makes the answer follow the offer order. A DUT that carries Opus therefore
+  answers 96, and a DUT that does not answers 0. This scenario checks the
+  first case. `uac_opus_refused.xml` checks the second with the same offer, so
+  the two scenarios differ in the DUT configuration alone.
+
+  RFC 7587 section 7 fixes the rtpmap at `opus/48000/2` for every internal
+  sampling rate, so the inverse checks refuse `opus/16000` and `opus/8000`.
+  RFC 4733 section 2.1 runs the event stream on the clock of its audio. The
+  answer must therefore take 102 (`telephone-event/48000`), and an inverse
+  check refuses 101.
+
+  The offer asks for `usedtx=1`. The answer must carry no dtx key. The jitter
+  buffer has no DTX gap handling, so this stack exposes no Opus DTX
+  (`src/proto/shared/sdp.h`, `struct sdp_opus_fmtp`).
+
+  Not verified live: the stub advertises Opus, so the end-to-end
+  flow runs in the default set of the harness. The stub has no media plane, so
+  no Opus packet crosses a wire.
+
+  RFC 3261 sections 13 and 15, RFC 3264 section 6.1, RFC 4733 section 2.1, RFC
+  7587 sections 6.1 and 7.
+-->
+<scenario name="UAC Opus call answered with Opus">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp Opus call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 96 0 101 102
+      a=rtpmap:96 opus/48000/2
+      a=fmtp:96 maxplaybackrate=16000;maxaveragebitrate=20000;useinbandfec=1;usedtx=1
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=rtpmap:102 telephone-event/48000
+      a=fmtp:102 0-16
+      a=ptime:20
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true">
+    <action>
+      <ereg regexp="m=audio[[:space:]]+[1-9][0-9]*[[:space:]]+RTP/AVP[[:space:]]+96([[:space:]]|$)"
+            search_in="body" check_it="true" assign_to="audio_answer"/>
+      <ereg regexp="a=rtpmap:96 opus/48000/2"
+            search_in="body" check_it="true" assign_to="opus_rtpmap"/>
+      <ereg regexp="a=fmtp:96 maxplaybackrate=16000;maxaveragebitrate=64000;useinbandfec=1"
+            search_in="body" check_it="true" assign_to="opus_fmtp"/>
+      <ereg regexp="a=rtpmap:102 telephone-event/48000"
+            search_in="body" check_it="true" assign_to="opus_dtmf"/>
+      <ereg regexp="a=maxptime:20"
+            search_in="body" check_it="true" assign_to="opus_maxptime"/>
+      <ereg regexp="opus/16000" search_in="body" check_it_inverse="true"
+            assign_to="opus_wrong_rate"/>
+      <ereg regexp="opus/8000" search_in="body" check_it_inverse="true"
+            assign_to="opus_narrow_rate"/>
+      <ereg regexp="dtx" search_in="body" check_it_inverse="true"
+            assign_to="opus_dtx"/>
+      <ereg regexp="telephone-event/8000" search_in="body" check_it_inverse="true"
+            assign_to="opus_wrong_dtmf"/>
+      <ereg regexp="a=rtpmap:0 PCMU" search_in="body" check_it_inverse="true"
+            assign_to="pcmu_answer"/>
+    </action>
+  </recv>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="5000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+
+  <Reference variables="audio_answer,opus_rtpmap,opus_fmtp,opus_dtmf,opus_maxptime,opus_wrong_rate,opus_narrow_rate,opus_dtx,opus_wrong_dtmf,pcmu_answer"/>
+</scenario>

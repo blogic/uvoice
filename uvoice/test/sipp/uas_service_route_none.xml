@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  A registrar that grants no service route, and the DUT call behind it: no
+  request of the line carries a Route header.
+
+  This is the second field case. The 200 to the REGISTER carries no
+  Service-Route header. A request of the line must then carry no Route header
+  at all (RFC 3608 section 5.1).
+
+  One scenario must answer both requests. The DUT places the call from a
+  registered line, so this scenario must answer the registration. SIPp takes
+  an out-of-call scenario in UAC mode alone, so a UAS run has exactly one
+  scenario for every request that reaches it. The two requests carry different
+  Call-IDs and open two instances of this one scenario. The first receive
+  therefore matches a regular expression over the two method names (SIPp 3.7.3
+  `call.cpp`, `matches_scenario` with `regexp_match`).
+
+  The receive itself carries the branch. A `nop` behind a checking receive
+  erases the failure of its check (`test/sipp/README.md`, "When a failed check
+  is judged").
+
+  The inverse check runs for both methods, and it is the assertion. A Route
+  header on the REGISTER is one field defect, and a Route header on the
+  INVITE is the other. `start_line` keeps the reader off
+  a Record-Route, whose name ends in the one that it looks for (SIPp 3.7.3
+  `call.cpp`, `extractSubMessage`). `run_sipp.sh` also reads the SIPp message
+  log, and requires every INVITE of the DUT to carry no Route header
+  (`service_route_msg_check()`).
+
+  The Contact is echoed, not written, as `test/e2e/register_ooc.xml` echoes
+  it: a registrar answers the binding that it was given.
+
+  It carries no `rtp_echo`. The flow behind it asserts signaling and daemon
+  state alone (`test/e2e/README.md`, section "The two SIPp builds").
+-->
+<scenario name="UAS registration without a service route and the call behind it">
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="." search_in="hdr" header="Route:" start_line="true"
+            check_it_inverse="true" assign_to="route_seen"/>
+    </action>
+  </recv>
+
+  <send next="done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[media_ip_type] [media_ip]
+      s=uvoice SIPp service route call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="hdr" header="Route:" start_line="true"
+            check_it_inverse="true" assign_to="ack_route_seen"/>
+    </action>
+  </recv>
+
+  <recv request="BYE" timeout="60000">
+    <action>
+      <ereg regexp="." search_in="hdr" header="Route:" start_line="true"
+            check_it_inverse="true" assign_to="bye_route_seen"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="done"/>
+
+  <Reference variables="route_seen,ack_route_seen,bye_route_seen"/>
+</scenario>

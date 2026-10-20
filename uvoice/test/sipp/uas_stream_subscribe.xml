@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  This peer answers the REGISTER and the message-waiting SUBSCRIBE of a DUT on
+  a reliable transport, each with 200 and a 3600-second expiry.
+
+  RFC 3842 names the event package, and RFC 6665 section 4.1.2.1 the exchange.
+  A 200 with an Expires moves the subscription to its active state. This peer
+  echoes the Contact in each 200.
+
+  One scenario must answer both requests. The DUT subscribes only from a
+  registered line (`src/proto/sip/account.c`, `account_sub_start` runs from the
+  registration callback), so this scenario must answer the registration. SIPp
+  takes an out-of-call scenario in UAC mode alone, so a UAS run has exactly
+  one scenario for every request that reaches it. The two requests carry
+  different Call-IDs and open two instances of this one scenario. The first
+  receive therefore matches a regular expression over the two method names
+  (SIPp 3.7.3 `call.cpp`, `matches_scenario` with `regexp_match`).
+
+  The Contact is echoed, not written, as `test/e2e/register_ooc.xml` echoes
+  it: a registrar answers the binding that it was given.
+
+  It sends no NOTIFY, on purpose. The message-waiting intake has its own
+  scenario and its own flow (`uas_mwi_notify.xml`), and this scenario exists
+  for the SUBSCRIBE itself. A subscription that the notifier accepted is
+  active on the 2xx alone, so the DUT sends no second SUBSCRIBE inside the
+  run.
+
+  `test/e2e/run_e2e.sh` reads the transport token of the SUBSCRIBE Via and the
+  transport parameter of its Contact off the SIPp message log. Reason: a SIPp
+  regexp attribute takes no keyword, so it cannot name the transport that the
+  run was given. The scenario needs a tcp or tls DUT with `mwi_subscribe` 1.
+-->
+<scenario name="UAS registration and message-waiting SUBSCRIBE">
+  <recv request="REGISTER|SUBSCRIBE" regexp_match="true" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+</scenario>

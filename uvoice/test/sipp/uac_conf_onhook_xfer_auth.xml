@@ -1,0 +1,367 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Challenges the REFER and the BYE of the on-hook transfer of
+  `uac_conf_onhook_xfer.xml`, and requires each request again with
+  credentials.
+
+  As `uac_conf_onhook_xfer.xml` does, it places the first conference leg and
+  answers the hold and join-resume re-INVITEs of the DUT. It also holds and
+  resumes the conference from the far end. After the on-hook, it answers the
+  REFER 401 and the BYE 401.
+
+  The retry must carry the Refer-To of the first REFER, byte for byte. A retry
+  without the replaced dialog would refer the target to a plain call. It would
+  pass one call on where the subscriber asked to join two. The scenario
+  captures the header of the first REFER and compares the retry with it. It
+  also reads the escaped Replaces of the retry for its shape. The to-tag of
+  that Replaces is the fixed tag of `xfer_replaced_ooc.xml`.
+
+  The two challenges carry different nonces. The DUT reads a repeated nonce as
+  a refusal of the password that it just offered (`src/proto/sip/auth.c`,
+  `sip_auth_challenge_take`). A BYE challenge with the nonce of the REFER
+  would therefore earn no retry, and would check nothing.
+
+  A third REFER or a third BYE ends the run. This scenario has no receive left
+  for either. SIPp aborts a call on a request that it does not expect (SIPp
+  3.7.3 `src/call.cpp`, `process_unexpected` and the `E_AM_UNEXP_BYE` branch
+  of `automaticResponseMode`). The end-to-end harness counts both requests
+  from the message log.
+
+  It needs the out-of-call scenario `xfer_replaced_ooc.xml` for the second
+  call that the DUT places, as `uac_conf_onhook_xfer.xml` does.
+
+  RFC 3261 sections 22.2 and 22.4 apply to the challenges. RFC 3264 section
+  8.4 applies to the hold and the resume. RFC 3515 section 2.4.2 and RFC 3891
+  section 3 apply to the escaped Replaces. RFC 5589 section 7.1 applies to the
+  BYE after the verdict.
+-->
+<scenario name="UAC conference leg that challenges the on-hook REFER and BYE">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=xfer-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 4 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice conference leg
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true"/>
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=xfer-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="INVITE" timeout="30000"/>
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 4 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice conference hold
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=recvonly
+    ]]>
+  </send>
+  <recv request="ACK" timeout="10000"/>
+
+  <recv request="INVITE" timeout="30000"/>
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 4 3 IN IP[local_ip_type] [local_ip]
+      s=uvoice conference resume
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv request="ACK" timeout="10000"/>
+
+  <pause milliseconds="2000"/>
+  <send retrans="500" start_txn="remote-hold">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=xfer-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 4 4 IN IP[local_ip_type] [local_ip]
+      s=uvoice remote hold
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendonly
+    ]]>
+  </send>
+  <recv response="200" response_txn="remote-hold" timeout="10000">
+    <action>
+      <ereg regexp="a=recvonly" search_in="body" check_it="true"
+            assign_to="hold_answer"/>
+    </action>
+  </recv>
+  <send ack_txn="remote-hold">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=xfer-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="1500"/>
+
+  <send retrans="500" start_txn="remote-resume">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=xfer-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 4 5 IN IP[local_ip_type] [local_ip]
+      s=uvoice remote resume
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+  <recv response="200" response_txn="remote-resume" timeout="10000">
+    <action>
+      <ereg regexp="a=sendrecv" search_in="body" check_it="true"
+            assign_to="resume_answer"/>
+    </action>
+  </recv>
+  <send ack_txn="remote-resume">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=xfer-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 3 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The whole Refer-To of the first REFER, which the retry has to repeat.
+       The value is read without a shape of its own: what the retry owes is
+       the header the DUT built before the challenge. -->
+  <recv request="REFER" optional="true" next="refer">
+    <action>
+      <ereg regexp="^[[:space:]]*(.*)$" search_in="hdr" header="Refer-To:"
+            check_it="true" assign_to="first_refer_to_hdr,first_refer_to"/>
+    </action>
+  </recv>
+  <recv request="BYE" timeout="60000" next="bye"/>
+
+  <label id="refer"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 401 Unauthorized
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      WWW-Authenticate: Digest realm="uvoice.example", nonce="uvoice-refer-nonce", opaque="uvoice-opaque-refer", algorithm=MD5
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The credential retry (RFC 3261 22.2). The subscription id of the NOTIFY
+       below is the CSeq of this REFER, because the retry created the
+       subscription the first one did not (RFC 3515 2.4.4). -->
+  <recv request="REFER" timeout="10000">
+    <action>
+      <ereg regexp="nonce[[:space:]]*=[[:space:]]*&quot;uvoice-refer-nonce&quot;"
+            search_in="hdr" header="Authorization:" check_it="true"
+            assign_to="refer_auth_nonce"/>
+      <ereg regexp="opaque[[:space:]]*=[[:space:]]*&quot;uvoice-opaque-refer&quot;"
+            search_in="hdr" header="Authorization:" check_it="true"
+            assign_to="refer_auth_opaque"/>
+      <ereg regexp="[?]Replaces=[0-9a-zA-Z._-]+%40[0-9a-zA-Z._-]+%3Bto-tag%3Dsipp-peer-tag%3Bfrom-tag%3D[0-9a-zA-Z._-]+&gt;"
+            search_in="hdr" header="Refer-To:" check_it="true"
+            assign_to="retry_replaces"/>
+      <ereg regexp="^[[:space:]]*(.*)$" search_in="hdr" header="Refer-To:"
+            check_it="true" assign_to="retry_refer_to_hdr,retry_refer_to"/>
+      <strcmp variable="retry_refer_to" variable2="first_refer_to"
+              check_it="true"/>
+      <ereg regexp="([0-9]+)" search_in="hdr" header="CSeq:"
+            check_it="true" assign_to="refer_cseq_hdr,refer_cseq"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 202 Accepted
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The verdict of the implicit subscription (RFC 3515 2.4.5). The DUT
+       BYEs this leg only behind it (RFC 5589 7.1), so a BYE that arrives in
+       front of the 200 to this NOTIFY fails the scenario. -->
+  <send retrans="500">
+    <![CDATA[
+      NOTIFY [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=xfer-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 4 NOTIFY
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Event: refer;id=[$refer_cseq]
+      Subscription-State: terminated;reason=noresource
+      Content-Type: message/sipfrag;version=2.0
+      [routes]
+      Content-Length: [len]
+
+      SIP/2.0 200 OK
+    ]]>
+  </send>
+  <recv response="200" timeout="10000"/>
+  <recv request="BYE" timeout="30000"/>
+
+  <label id="bye"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 401 Unauthorized
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      WWW-Authenticate: Digest realm="uvoice.example", nonce="uvoice-bye-nonce", opaque="uvoice-opaque-bye", algorithm=MD5
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="BYE" timeout="10000">
+    <action>
+      <ereg regexp="nonce[[:space:]]*=[[:space:]]*&quot;uvoice-bye-nonce&quot;"
+            search_in="hdr" header="Authorization:" check_it="true"
+            assign_to="bye_auth_nonce"/>
+      <ereg regexp="opaque[[:space:]]*=[[:space:]]*&quot;uvoice-opaque-bye&quot;"
+            search_in="hdr" header="Authorization:" check_it="true"
+            assign_to="bye_auth_opaque"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- This leg answered its own BYE above. The other leg ends on the
+       out-of-call scenario: by the DUT's BYE on a plain hangup, or by that
+       peer's own BYE twelve seconds after it answered on an on-hook transfer.
+       SIPp leaves once this call is done and tears an open instance down, so
+       this call stays up past the later of the two. -->
+  <pause milliseconds="20000"/>
+
+  <Reference variables="hold_answer,resume_answer,first_refer_to_hdr,first_refer_to,refer_auth_nonce,refer_auth_opaque,retry_replaces,retry_refer_to_hdr,retry_refer_to,refer_cseq_hdr,refer_cseq,bye_auth_nonce,bye_auth_opaque"/>
+</scenario>

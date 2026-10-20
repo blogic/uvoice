@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Verifies an inbound DUT call: INVITE, 180, 200 and ACK, a five-second hold,
+  then a BYE from this peer.
+
+  The offer carries PCMU and telephone-event at payload type 101. The 200 must
+  carry `m=audio` at a non-zero port over RTP/AVP. The scenario runs
+  `rtp_echo` from the ACK to the end of the call.
+
+  RFC 3261 sections 13 and 15.
+-->
+<scenario name="UAC basic call with caller BYE">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[media_ip_type] [media_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true">
+    <action>
+      <ereg regexp="m=audio[[:space:]]+[1-9][0-9]*[[:space:]]+RTP/AVP"
+            search_in="body" check_it="true" assign_to="audio_answer"/>
+    </action>
+  </recv>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+    <action>
+      <exec rtp_echo="startaudio,0,PCMU/8000"/>
+    </action>
+  </send>
+
+  <pause milliseconds="5000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000">
+    <action>
+      <exec rtp_echo="stopaudio,0,PCMU/8000"/>
+    </action>
+  </recv>
+
+  <Reference variables="audio_answer"/>
+</scenario>

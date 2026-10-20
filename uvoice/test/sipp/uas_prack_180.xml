@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  A reliable 180 draws one PRACK, and its RAck names the RSeq, the CSeq number
+  and the method of the 180 (RFC 3262 section 7.2).
+
+  Every INVITE that the DUT sends advertises `100rel` in Supported and PRACK
+  in Allow, and requires neither: `100rel` must not appear in Require. This
+  peer sends the 180 with `Require: 100rel` and `RSeq: 4242`.
+
+  The PRACK must address the Contact of this peer (`sip:sipp@`). Its RAck must
+  read 4242, then the CSeq number of the INVITE, then INVITE. A `strcmp`
+  action compares that CSeq number with the value captured from the INVITE.
+  The CSeq of the PRACK must be one higher than that of the INVITE, which the
+  `todouble`, `add` and `test` actions check.
+
+  The 200 of the INVITE carries the Via and the CSeq of the INVITE from
+  variables. Reason: the last message received by then is the PRACK, and
+  `[last_Via:]` would carry the branch of that transaction.
+
+  RFC 3262 sections 4 and 7.2.
+-->
+<scenario name="UAS reliable 180 answered with PRACK">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="(^|[,[:space:]])100rel([,[:space:]]|$)"
+            search_in="hdr" header="Supported:"
+            assign_to="invite_supported"/>
+      <ereg regexp="(^|[,[:space:]])PRACK([,[:space:]]|$)"
+            search_in="hdr" header="Allow:"
+            assign_to="invite_allow_prack"/>
+      <ereg regexp="(^|[,[:space:]])100rel([,[:space:]]|$)"
+            search_in="hdr" header="Require:"
+            assign_to="invite_require_absent"/>
+      <ereg regexp="^[[:space:]]*(.*)$"
+            search_in="hdr" header="Via:"
+            assign_to="invite_via_line,invite_via"/>
+      <ereg regexp="^[[:space:]]*([0-9]+)[[:space:]]+INVITE[[:space:]]*$"
+            search_in="hdr" header="CSeq:"
+            assign_to="invite_cseq_line,invite_cseq"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Require: 100rel
+      RSeq: 4242
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="PRACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="invite_supported"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="invite_allow_prack"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="invite_require_absent"
+            check_it_inverse="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="invite_via_line"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="invite_cseq_line"
+            check_it="true" assign_to="initial_check"/>
+      <todouble assign_to="invite_cseq_next" variable="invite_cseq"/>
+      <add assign_to="invite_cseq_next" value="1"/>
+      <ereg regexp="^PRACK sip:sipp@"
+            search_in="msg" check_it="true" assign_to="prack_target"/>
+      <ereg regexp="^[[:space:]]*4242[[:space:]]+([0-9]+)[[:space:]]+INVITE[[:space:]]*$"
+            search_in="hdr" header="RAck:" check_it="true"
+            assign_to="rack_line,rack_cseq"/>
+      <strcmp variable="rack_cseq" variable2="invite_cseq" check_it="true"/>
+      <ereg regexp="^[[:space:]]*([0-9]+)[[:space:]]+PRACK[[:space:]]*$"
+            search_in="hdr" header="CSeq:" check_it="true"
+            assign_to="prack_cseq_line,prack_cseq"/>
+      <todouble assign_to="prack_cseq_num" variable="prack_cseq"/>
+      <test variable="prack_cseq_num" variable2="invite_cseq_next"
+            compare="equal" check_it="true"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: [$invite_via]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      CSeq: [$invite_cseq] INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[media_ip_type] [media_ip]
+      s=uvoice SIPp prack
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <pause milliseconds="2000"/>
+
+  <recv request="BYE" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check,invite_supported,invite_allow_prack,invite_require_absent,invite_via_line,invite_cseq_line,invite_cseq_next,prack_target,rack_line,prack_cseq_line,prack_cseq_num"/>
+</scenario>

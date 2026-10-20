@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Support scenario that never runs alone: the out-of-call peer of the transfer
+  flows, which answers a call that the DUT places by itself.
+
+  SIPp takes it as `-oocsf`. A UAS run originates nothing, and a UAC run
+  answers only what belongs to its own call. The request that opens a dialog
+  nobody asked for therefore reaches the `-oocsf` scenario
+  (`test/e2e/README.md`, "The transfer flows").
+
+  Three kinds of flow use it, each for its own request
+  (`test/e2e/run_e2e.sh`). In a transferee flow (`xfer_transferee_run`, with
+  `uac_xfer_refer.xml` or `uac_xfer_refer_replaces.xml`), the DUT sends the
+  referred child INVITE to the Refer-To target. In the Replaces flow
+  (`xfer_replaces_run`, with `uac_xfer_replaces.xml`), the DUT places an
+  ordinary outbound call (`xfer_call_place`), and the replacing INVITE then
+  takes over its dialog. In the conference flows that start through
+  `conf_incoming_start`, it answers the second call that the DUT places for
+  the join. The on-hook consult flows (`xfer-onhook`, `conf-onhook-xfer`,
+  `conf-onhook-xfer-auth`) pass `xfer_replaced_ooc.xml` instead.
+
+  The scenario declares the globals `g_callid` and `g_dut_tag` first, so that
+  the sibling scenario can read them. It receives the INVITE with `rrs`, and
+  captures the Call-ID into `g_callid` and the From tag into `g_dut_tag`. It
+  answers 200 with SDP after the ring, and answers the BYE 200.
+
+  It rings for 2500 ms on purpose. The two-name contract can be read in the
+  window between the child INVITE and its answer. In that window the parent is
+  suppressed, and the child holds no name yet. A status poll needs that state
+  to stand still long enough to read it (`test/e2e/run_e2e.sh`, the `ui_slot`
+  assertions).
+
+  The 180 carries the fixed tag `sipp-peer-tag`, not `[call_number]`. The
+  Replaces flow builds a Replaces header from this dialog in its other
+  scenario, and an instance number cannot be predicted. The daemon's REGISTER
+  also opens instances of this scenario, and each one uses a number.
+
+  A REGISTER that reaches this scenario aborts its instance while it waits for
+  an INVITE. Every UAS flow relies on that absorbed-REGISTER shape
+  (`test/e2e/run_e2e.sh`, `sipp_abort_classify`).
+-->
+<scenario name="Out-of-call peer, answers a call the DUT places by itself">
+  <!-- The declaration comes first, and it has to: a variable SIPp has already
+       allocated in this scenario's own table stays there, and the other
+       scenario of the run would then read an empty one of its own. -->
+  <Global variables="g_callid,g_dut_tag"/>
+
+  <recv request="INVITE" timeout="60000" rrs="true">
+    <action>
+      <!-- the replaced dialog's identity, for the Replaces flow's other half -->
+      <ereg regexp="[!-~]+" search_in="hdr" header="Call-ID:"
+            check_it="true" assign_to="g_callid"/>
+      <ereg regexp=";tag=([^;[:space:]]+)" search_in="hdr" header="From:"
+            check_it="true" assign_to="junk,g_dut_tag"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-peer-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="2500"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-peer-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 2 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <recv request="BYE" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="junk,g_callid,g_dut_tag"/>
+</scenario>

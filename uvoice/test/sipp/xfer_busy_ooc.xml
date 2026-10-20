@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Support scenario that never runs alone: the out-of-call peer that refuses
+  the call the DUT places by itself with 486, so a referred child fails.
+
+  SIPp takes it as `-oocsf`. It is the `xfer_peer_ooc.xml` shape with one
+  difference: it answers 486 Busy Here instead of 200. The transferee
+  therefore keeps the call that it already had. `uac_xfer_child_fail.xml` uses
+  it.
+
+  It sends a 180 first, with the fixed tag `sipp-busy-tag`, and rings for 2000
+  ms, for the reason of the answering peer. Between the child INVITE and its
+  final, both legs of the line read as shadows, and a status poll needs that
+  state to stand still.
+
+  A REGISTER that reaches this scenario aborts its instance while it waits for
+  an INVITE, the absorbed-REGISTER shape of every UAS flow.
+-->
+<scenario name="Out-of-call peer, refuses the call the DUT places by itself">
+  <recv request="INVITE" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-busy-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="2000"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 486 Busy Here
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-busy-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+</scenario>

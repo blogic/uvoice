@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# uvoice - native voice stack for OpenWrt
+# Copyright (C) 2026 Adtran Inc.
+# Author: Chad Monroe <chad.monroe@adtran.com>
+#
+# Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+#
+# A fixture of lec_duty.py --check. The last 30 s of a call with a silent near
+# end: the handset of an MT7988 board lay on a desk, and a cell phone was the
+# far end. The lines are a capture from 15:59:36 to 16:00:05, with the host name
+# of each line cut. Two seconds carry no judged frame, and one second
+# carries 99 frames.
+# check lec_duty
+# expect time     frames judged  duty  wait  erle unlike   dt  quiet | erle_dB nlp    peak loop_open
+# expect 15:59:37    100     71   90%   10%    0%    0%    0%     29 |   20.6 acting  222 0
+# expect 15:59:38    100     89   92%    8%    0%    0%    0%     11 |   12.3 on      222 0
+# expect 15:59:39    100     85   92%    8%    0%    0%    0%     15 |   13.0 acting  222 0
+# expect 15:59:40    100     55   75%   25%    0%    0%    0%     45 |   10.4 on      222 0
+# expect 15:59:41    100     40   82%   18%    0%    0%    0%     60 |   14.8 on      222 0
+# expect 15:59:42    100     38   76%   21%    0%    3%    0%     62 |   22.1 on      222 0
+# expect 15:59:43    100     46   85%   15%    0%    0%    0%     54 |   18.1 on      222 0
+# expect 15:59:44    100     49   86%   14%    0%    0%    0%     51 |   15.1 on      222 0
+# expect 15:59:45    100     49   86%   14%    0%    0%    0%     51 |   16.3 acting  222 0
+# expect 15:59:46    100     58   83%   17%    0%    0%    0%     42 |    9.6 on      222 0
+# expect 15:59:47    100     56   64%   32%    0%    4%    0%     44 |   12.2 on      222 0
+# expect 15:59:48    100     42   50%   50%    0%    0%    0%     58 |   16.2 on      222 0
+# expect 15:59:49    100     80   82%   18%    0%    0%    0%     20 |   20.2 acting  222 0
+# expect 15:59:50    100     69   90%   10%    0%    0%    0%     31 |    9.6 acting  222 0
+# expect 15:59:51    100      2    0%   50%    0%   50%    0%     98 |    9.6 on      222 0
+# expect 15:59:52    100     74   80%   19%    0%    1%    0%     26 |   14.3 on      222 0
+# expect 15:59:53    100    100  100%    0%    0%    0%    0%      0 |   11.3 acting  222 0
+# expect 15:59:54    100      0    -    -    -    -    -    100 |   11.3 on      222 0
+# expect 15:59:55    100     47   34%   38%   26%    2%    0%     53 |   15.9 acting  222 0
+# expect 15:59:56    100     91   84%    0%   16%    0%    0%      9 |    5.7 on      222 0
+# expect 15:59:57    100     26   38%   27%   35%    0%    0%     74 |   15.0 acting  222 0
+# expect 15:59:58     99     90   79%   16%    0%    1%    4%      9 |   14.6 on      222 0
+# expect 15:59:59    100      0    -    -    -    -    -    100 |   14.6 on      222 0
+# expect 16:00:00    100     96   85%   15%    0%    0%    0%      4 |   16.4 acting  222 0
+# expect 16:00:01    100     41   83%   17%    0%    0%    0%     59 |   14.7 on      222 0
+# expect 16:00:02    100     71   68%   30%    0%    3%    0%     29 |   16.4 acting  222 0
+# expect 16:00:03    100     42   83%   17%    0%    0%    0%     58 |    9.7 on      222 0
+# expect 16:00:04    100     56   68%   29%    0%    4%    0%     44 |   16.6 on      222 0
+# expect 16:00:05    100     11   36%   64%    0%    0%    0%     89 |   16.3 on      222 0
+# expect seconds with >= 20 judged frames: 25; duty median 83% (p25 71, p75 86); seconds with duty 0: 0
+# expect share of judged frames over those seconds: active 80%, wait 17%, erle 2%, unlike 1%, dt 0%
+# expect ERLE over those seconds: median 14.8 dB (p25 11.7, p75 16.4)
+2026-09-29 15:59:36.915 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=10727 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=226
+2026-09-29 15:59:36.915 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=1900 active=394 wait=52 erle=7 unlike=6 dt=210 quiet=1231
+2026-09-29 15:59:37.914 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=20604 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:37.914 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2000 active=458 wait=59 erle=7 unlike=6 dt=210 quiet=1260
+2026-09-29 15:59:38.914 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=12267 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:38.914 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2100 active=540 wait=66 erle=7 unlike=6 dt=210 quiet=1271
+2026-09-29 15:59:39.913 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=12988 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:39.913 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2200 active=618 wait=73 erle=7 unlike=6 dt=210 quiet=1286
+2026-09-29 15:59:40.913 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=10447 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:40.913 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2300 active=659 wait=87 erle=7 unlike=6 dt=210 quiet=1331
+2026-09-29 15:59:41.913 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=14751 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:41.913 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2400 active=692 wait=94 erle=7 unlike=6 dt=210 quiet=1391
+2026-09-29 15:59:42.913 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=22143 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:42.913 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2500 active=721 wait=102 erle=7 unlike=7 dt=210 quiet=1453
+2026-09-29 15:59:43.913 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=18120 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:43.913 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2600 active=760 wait=109 erle=7 unlike=7 dt=210 quiet=1507
+2026-09-29 15:59:44.913 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=15089 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:44.913 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2700 active=802 wait=116 erle=7 unlike=7 dt=210 quiet=1558
+2026-09-29 15:59:45.913 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=16288 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:45.913 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2800 active=844 wait=123 erle=7 unlike=7 dt=210 quiet=1609
+2026-09-29 15:59:46.912 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=9562 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:46.912 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=2900 active=892 wait=133 erle=7 unlike=7 dt=210 quiet=1651
+2026-09-29 15:59:47.912 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=12158 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:47.912 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3000 active=928 wait=151 erle=7 unlike=9 dt=210 quiet=1695
+2026-09-29 15:59:48.912 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=16166 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:48.912 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3100 active=949 wait=172 erle=7 unlike=9 dt=210 quiet=1753
+2026-09-29 15:59:49.911 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=20242 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:49.911 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3200 active=1015 wait=186 erle=7 unlike=9 dt=210 quiet=1773
+2026-09-29 15:59:50.911 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=9628 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:50.911 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3300 active=1077 wait=193 erle=7 unlike=9 dt=210 quiet=1804
+2026-09-29 15:59:51.911 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=9628 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:51.911 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3400 active=1077 wait=194 erle=7 unlike=10 dt=210 quiet=1902
+2026-09-29 15:59:52.910 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=14287 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:52.910 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3500 active=1136 wait=208 erle=7 unlike=11 dt=210 quiet=1928
+2026-09-29 15:59:53.910 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=11331 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:53.910 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3600 active=1236 wait=208 erle=7 unlike=11 dt=210 quiet=1928
+2026-09-29 15:59:54.910 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=11331 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:54.910 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3700 active=1236 wait=208 erle=7 unlike=11 dt=210 quiet=2028
+2026-09-29 15:59:55.909 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=15891 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:55.909 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3800 active=1252 wait=226 erle=19 unlike=12 dt=210 quiet=2081
+2026-09-29 15:59:56.909 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=5725 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:56.909 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=3900 active=1328 wait=226 erle=34 unlike=12 dt=210 quiet=2090
+2026-09-29 15:59:57.908 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=14981 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:57.908 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4000 active=1338 wait=233 erle=43 unlike=12 dt=210 quiet=2164
+2026-09-29 15:59:58.907 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=14585 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:58.907 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4099 active=1409 wait=247 erle=43 unlike=13 dt=214 quiet=2173
+2026-09-29 15:59:59.907 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=14585 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 15:59:59.907 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4199 active=1409 wait=247 erle=43 unlike=13 dt=214 quiet=2273
+2026-09-29 16:00:00.906 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=16425 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 16:00:00.906 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4299 active=1491 wait=261 erle=43 unlike=13 dt=214 quiet=2277
+2026-09-29 16:00:01.906 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=14693 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 16:00:01.906 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4399 active=1525 wait=268 erle=43 unlike=13 dt=214 quiet=2336
+2026-09-29 16:00:02.906 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=acting erle_mdb=16390 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 16:00:02.906 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4499 active=1573 wait=289 erle=43 unlike=15 dt=214 quiet=2365
+2026-09-29 16:00:03.906 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=9695 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 16:00:03.906 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4599 active=1608 wait=296 erle=43 unlike=15 dt=214 quiet=2423
+2026-09-29 16:00:04.905 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=16559 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 16:00:04.905 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4699 active=1646 wait=312 erle=43 unlike=17 dt=214 quiet=2467
+2026-09-29 16:00:05.905 daemon.debug uvoiced[28539]: [media] l1 lec ec=on nlp=on erle_mdb=16263 ref_ready=1 retimes=0 kind=voice loop_open=0 peak_tap=222
+2026-09-29 16:00:05.905 daemon.debug uvoiced[28539]: [media] l1 lec nlp frames=4799 active=1650 wait=319 erle=43 unlike=17 dt=214 quiet=2556

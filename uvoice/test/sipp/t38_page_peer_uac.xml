@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Support scenario that stands in for the DUT of `uas_t38_page.xml` on a
+  loopback run, and never runs against a DUT. It places the call, accepts the
+  T.38 upgrade that `uas_t38_page.xml` offers, keeps the offered order in its
+  answer and ends the call.
+
+  Reason: `uas_t38_page.xml` needs a t38-peer process and a fax terminal for a
+  real page. No end-to-end flow loads it, so the bench cannot prove a change
+  to its checks. Every check of that scenario reads the signaling alone, and
+  this peer drives all of them with no media. `test/sipp/README.md`, "Proving
+  the two T.38 page scenarios on loopback", gives the two commands of a run.
+
+  The answer keeps the offered order. The withdrawn audio line stays at port
+  zero, and the image line comes back at a live port (RFC 3264 section 8.4).
+-->
+<scenario name="T.38 page peer, the calling side">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: PEER <sip:peer@[local_ip]:[local_port]>;tag=peer-[pid]-[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:peer@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=peer 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice T38 page peer
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true"/>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: PEER <sip:peer@[local_ip]:[local_port]>;tag=peer-[pid]-[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="INVITE" timeout="30000"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:peer@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=peer 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice T38 page peer
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio 0 RTP/AVP 0
+      m=image [media_port+2] udptl t38
+      a=T38FaxVersion:0
+      a=T38FaxRateManagement:transferredTCF
+      a=T38MaxBitRate:9600
+      a=T38FaxMaxDatagram:400
+      a=T38FaxUdpEC:t38UDPRedundancy
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: PEER <sip:peer@[local_ip]:[local_port]>;tag=peer-[pid]-[call_number]
+      To: <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+</scenario>

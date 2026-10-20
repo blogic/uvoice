@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The DUT retries a REGISTER that drew 423 with an expiry of at least 300
+  seconds.
+
+  This peer answers the first REGISTER with 423 Interval Too Brief and
+  `Min-Expires: 300`. The Expires header of the retry must read at least 300:
+  the check accepts 300 to 999, or four digits and more. This peer then grants
+  300 seconds.
+
+  RFC 3261 sections 10.2.8 and 21.4.17.
+-->
+<scenario name="UAS REGISTER 423 interval too brief">
+  <recv request="REGISTER" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 423 Interval Too Brief
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Min-Expires: 300
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="REGISTER" timeout="30000">
+    <action>
+      <ereg regexp="(3[0-9]{2}|[4-9][0-9]{2}|[1-9][0-9]{3,})"
+            search_in="hdr" header="Expires:"
+            check_it="true" assign_to="retry_expires"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      Expires: 300
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="retry_expires"/>
+</scenario>

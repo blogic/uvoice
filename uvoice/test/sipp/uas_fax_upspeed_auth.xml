@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The upspeed of `uas_fax_upspeed.xml`, with a challenge on the upspeed
+  re-INVITE.
+
+  This is a field capture: the switch answers the first `0 8` re-INVITE 401,
+  and the unit repeats the offer with credentials 62 ms later.
+
+  The DUT calls out, and this scenario answers with G.729 alone. The runner
+  injects a CED toward the phone over ubus, and this peer answers the first
+  upspeed re-INVITE 401. The retry must carry the nonce and the opaque of that
+  challenge, and the same G.711 offer. That offer holds the two G.711 payload
+  types and the telephone-event that the channel negotiates. It holds no trace
+  of the G.729 of the committed call, and no comfort noise.
+
+  A fourth INVITE finds no receive left in this file, so SIPp aborts the call
+  on it.
+
+  RFC 3261 sections 14 and 22.2, RFC 3264 section 8, ITU-T T.30 answer tone.
+-->
+<scenario name="UAS challenged DUT G.711 fax upspeed">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg"
+            assign_to="to_match,local_uri"/>
+      <!-- the voice call offers the configured priority order, G.729 first -->
+      <ereg regexp="a=rtpmap:18 G729/8000" search_in="body"
+            assign_to="voice_offer"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp fax
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 101
+      a=rtpmap:18 G729/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="from_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="to_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="voice_offer"
+            check_it="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+
+  <!-- The runner injects the answer tone over ubus, which puts the upspeed
+       re-INVITE on the wire. This peer challenges it instead of answering it,
+       so the offer of the retry behind it is what carries the assertions. -->
+  <recv request="INVITE" timeout="30000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 401 Unauthorized
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      WWW-Authenticate: Digest realm="uvoice.example", nonce="uvoice-fax-nonce", opaque="uvoice-opaque-fax", algorithm=MD5
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The credentialed retry. It names the nonce and the opaque of the
+       challenge above (RFC 3261 section 22.2, RFC 2617 section 3.2.1) and
+       offers the same G.711 list the unchallenged upspeed offers. -->
+  <recv request="INVITE" timeout="10000">
+    <action>
+      <ereg regexp="nonce[[:space:]]*=[[:space:]]*&quot;uvoice-fax-nonce&quot;"
+            search_in="hdr" header="Authorization:" check_it="true"
+            assign_to="retry_nonce"/>
+      <ereg regexp="opaque[[:space:]]*=[[:space:]]*&quot;uvoice-opaque-fax&quot;"
+            search_in="hdr" header="Authorization:" check_it="true"
+            assign_to="retry_opaque"/>
+      <!-- the control character is the CR that ends the m= line, so the
+           format list is exactly these three entries and nothing more -->
+      <ereg regexp="m=audio[[:space:]]+[0-9]+[[:space:]]+RTP/AVP 0 8 101[[:cntrl:]]"
+            search_in="body" check_it="true" assign_to="fax_offer"/>
+      <ereg regexp="a=rtpmap:18" search_in="body" check_it_inverse="true"
+            assign_to="fax_no_g729"/>
+      <ereg regexp="a=rtpmap:13 CN" search_in="body" check_it_inverse="true"
+            assign_to="fax_no_cn"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp fax
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- Hold the converted call long enough for the runner to read the stub
+       dump back; without this the BYE leaves microseconds after the ACK. -->
+  <pause milliseconds="2000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 3 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check,retry_nonce,retry_opaque,fax_offer,fax_no_g729,fax_no_cn"/>
+</scenario>

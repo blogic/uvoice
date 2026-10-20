@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Lab scenario: carries a complete T.38 page after the DUT offers the upgrade,
+  with a real T.30 peer behind the image port.
+
+  This peer calls the DUT with G.729, and the 200 must carry `a=rtpmap:18
+  G729/8000`. The upgrade re-INVITE of the DUT must carry `m=image` at a live
+  port with `udptl t38`, anchored at the carriage return. It must carry
+  `a=T38FaxRateManagement:transferredTCF` and `a=T38MaxBitRate:14400`. Inverse
+  checks refuse an `m=audio` line and a direction attribute.
+
+  This peer answers the image offer at `media_port` plus two. A t38-peer
+  process sends the page there and reports the T.30 result. The DUT then hangs
+  up, and this peer takes the BYE.
+
+  The scenario belongs to no automated set. Run it with
+  `SIPP_TIMEOUT_SECONDS=600`, because a page takes about one minute. The
+  180-second wait covers a slow page and keeps the local BYE fallback
+  reachable.
+
+  RFC 3261 section 14, RFC 3264 section 8, RFC 3362, ITU-T T.30 V.21 preamble.
+-->
+<scenario name="UAC inbound call with a DUT T.38 page">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp T38
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 101
+      a=rtpmap:18 G729/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true">
+    <action>
+      <ereg regexp="m=audio[[:space:]]+[1-9][0-9]*[[:space:]]+RTP/AVP"
+            search_in="body" check_it="true" assign_to="audio_answer"/>
+      <ereg regexp="a=rtpmap:18 G729/8000" search_in="body" check_it="true"
+            assign_to="voice_codec"/>
+    </action>
+  </recv>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The runner reports the preamble over ubus, which puts the upgrade
+       re-INVITE on the wire. -->
+  <recv request="INVITE" timeout="30000">
+    <action>
+      <ereg regexp="m=image[[:space:]]+[1-9][0-9]*[[:space:]]+udptl[[:space:]]+t38[[:cntrl:]]"
+            search_in="body" check_it="true" assign_to="image_offer"/>
+      <ereg regexp="a=T38FaxRateManagement:transferredTCF"
+            search_in="body" check_it="true" assign_to="image_rate_mgmt"/>
+      <ereg regexp="a=T38MaxBitRate:14400" search_in="body" check_it="true"
+            assign_to="image_bit_rate"/>
+      <!-- the image stream replaces the audio one -->
+      <ereg regexp="m=audio" search_in="body" check_it_inverse="true"
+            assign_to="image_no_audio"/>
+      <ereg regexp="a=(sendrecv|sendonly|recvonly|inactive)"
+            search_in="body" check_it_inverse="true" assign_to="image_no_dir"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp T38
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=image [media_port+2] udptl t38
+      a=T38FaxVersion:0
+      a=T38FaxRateManagement:transferredTCF
+      a=T38MaxBitRate:9600
+      a=T38FaxMaxDatagram:400
+      a=T38FaxUdpEC:t38UDPRedundancy
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The DUT normally hangs up after the page. The long wait also covers a
+       slow page, and its timeout selects the local BYE fallback. -->
+  <recv request="BYE" timeout="180000" ontimeout="local_bye"/>
+
+  <send next="done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="local_bye"/>
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+  <!-- The label stands last on purpose. A jump past the last message ends
+       the call as a successful one (SIPp 3.7.3 call.cpp, call::next). A
+       <nop> here would erase the failure of every check above it. -->
+  <label id="done"/>
+  <Reference variables="audio_answer,voice_codec,image_offer,image_rate_mgmt,image_bit_rate,image_no_audio,image_no_dir"/>
+</scenario>

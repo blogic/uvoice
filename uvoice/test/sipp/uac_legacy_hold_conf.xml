@@ -1,0 +1,244 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Plays the RFC 2543 hold sequence of a field switch against a conference join,
+  with this peer on the first leg of the conference. This peer places the
+  first leg and the DUT answers it, so the file carries the `uac_` prefix of
+  the role that SIPp plays.
+
+  `uas_legacy_hold.xml` cannot serve this flow. There the DUT places the call.
+  Here the conference needs an inbound first leg (`test/e2e/run_e2e.sh`,
+  `conf_incoming_start()`).
+
+  Step 1: this peer calls the DUT, and the subscriber answers.
+
+  Step 2: the flash holds the first leg, and this peer answers the hold with
+  `a=recvonly`.
+
+  Step 3: the subscriber dials the second call and joins the two. The DUT
+  resumes the first leg. This peer answers that resume with the stale hold SDP
+  of the switch: `c=IN IP4 0.0.0.0`, the formats 18 0 8 and no direction
+  attribute. The leg is then held at the far end, inside a running conference.
+
+  Step 4: this peer sends an INVITE with no SDP, as the switch does. The 200
+  must carry an active offer at the real address. The ACK carries the answer
+  that puts the leg back on PCMU sendrecv.
+
+  The offer of the DUT states a direction only for a hold (`sdp.c`,
+  `offer_tail_write()`). The resume of step 3 therefore carries no direction
+  attribute, and an inverse check reads it.
+
+  The end-to-end flow `conf-legacy-hold` drives the two flashes and the dial,
+  and reads the conference after each step. The hook of the subscriber ends
+  both legs, so the BYE of the DUT ends this scenario.
+
+  One step of that flow is a margin, not a cause. The recvonly reading of the
+  resumed leg sits between the ACK of step 3 and the INVITE of step 4. Only
+  the pause between them holds it open. The pause is 1000 ms, against a 100 ms
+  poll and three ubus round trips. The comment beside the pause gives the
+  measurement.
+
+  RFC 3261 sections 13 to 15, RFC 3264 sections 6.1 and 8.4.
+-->
+<scenario name="UAC RFC 2543 hold inside a conference join">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=conf-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp conference legacy hold
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true"/>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=conf-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The hold the flash owes, answered the ordinary way. -->
+  <recv request="INVITE" timeout="60000">
+    <action>
+      <ereg regexp="a=sendonly" search_in="body" check_it="true"
+            assign_to="hold_offer"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp conference hold
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=recvonly
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The resume the join owes, answered with the stale hold SDP. -->
+  <recv request="INVITE" timeout="60000">
+    <action>
+      <ereg regexp="a=(sendonly|inactive|recvonly)" search_in="body"
+            check_it_inverse="true" assign_to="resume_offer"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 3 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp conference legacy hold
+      c=IN IP4 0.0.0.0
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 0 8
+      a=rtpmap:18 G729/8000
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The one margin of this file. The flow reads the resumed leg recvonly
+       between the ACK above and the INVITE below, and that reading costs a
+       100 ms poll and three ubus round trips. Measured headroom at the 50 ms
+       of the capture: 45 ms idle, and 19 ms under 40 busy loops; a 60 ms
+       delay in the reader fails the flow. SIPp waits for no runner, so the
+       order cannot be made causal here, and the pause carries the window
+       instead. -->
+  <pause milliseconds="1000"/>
+
+  <!-- The INVITE with no SDP behind it, which is what brings the leg back. -->
+  <send retrans="500" start_txn="offerless">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=conf-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="offerless" timeout="10000" rrs="true">
+    <action>
+      <ereg regexp="c=IN IP4 [1-9]" search_in="body" check_it="true"
+            assign_to="offerless_addr"/>
+      <ereg regexp="a=rtpmap:0 PCMU" search_in="body" check_it="true"
+            assign_to="offerless_pcmu"/>
+      <ereg regexp="c=IN IP4 0\.0\.0\.0" search_in="body"
+            check_it_inverse="true" assign_to="offerless_zero"/>
+      <ereg regexp="a=(sendonly|inactive|recvonly)" search_in="body"
+            check_it_inverse="true" assign_to="offerless_dir"/>
+    </action>
+  </recv>
+
+  <send ack_txn="offerless">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=conf-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 4 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp conference legacy hold answer
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="BYE" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="hold_offer,resume_offer,offerless_addr,offerless_pcmu,offerless_zero,offerless_dir"/>
+</scenario>

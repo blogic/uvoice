@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The DUT is the transferor of an attended transfer, and this peer completes
+  the referral: 202, then one NOTIFY with a sipfrag 200.
+
+  The DUT places the call, holds it and sends the REFER. The hold re-INVITE
+  must carry `a=sendonly` or `a=inactive`, and this peer answers `recvonly`.
+  The REFER must name a target `sip:<digits>@127.0.0.1` in its Refer-To, and
+  an inverse check requires that it carries no Replaces. This peer captures
+  the From tag of the DUT from the INVITE, and the CSeq of the REFER.
+
+  This peer answers 202, and sends one NOTIFY with `Event: refer;id=<CSeq>`
+  and `Subscription-State: terminated;reason=noresource`. Its
+  `message/sipfrag` body carries `SIP/2.0 200 OK`. The DUT must then send the
+  BYE that ends the transferred leg: the transferor that read the sipfrag 200
+  ends that leg.
+
+  A SIPp regexp lives in an XML attribute, and an attribute cannot hold the
+  `<` of a name-addr. `test/e2e/run_e2e.sh` therefore checks the exact
+  Refer-To and Referred-By values off the message log, as the stream flows
+  check the Via token. This file checks the message order, the target inside
+  the Refer-To header, and the absence of a Replaces on an attended referral.
+
+  The end-to-end flow `xfer-two-line` also uses this scenario, in its first
+  stage (`xfer_two_line_run()`). The scenario carries no `rtp_echo`, the rule
+  for stream scenarios in `test/e2e/README.md`, section "The two SIPp builds".
+
+  RFC 3515 sections 2.4.4 and 2.4.6, RFC 3420.
+-->
+<scenario name="UAS attended transfer, the DUT refers and this peer completes it">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <!-- the remote tag this peer needs to address the NOTIFY into the dialog -->
+      <ereg regexp=";tag=([^;[:space:]]+)" search_in="hdr" header="From:"
+            assign_to="junk,dut_tag"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="junk"
+            check_it="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+
+  <!-- The hook flash holds the call first. The transfer code is dialled from
+       HOLD_DIAL, so the leg the REFER rides is a held leg and the hold
+       re-INVITE comes in front of the referral. -->
+  <recv request="INVITE" timeout="20000">
+    <action>
+      <ereg regexp="a=sendonly|a=inactive" search_in="body" check_it="true"
+            assign_to="hold_dir"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=recvonly
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The REFER. Refer-To names the target the subscriber collected, and an
+       attended referral carries no Replaces at all: the target is a bare
+       number and not a dialog this side already holds. -->
+  <recv request="REFER" timeout="30000">
+    <action>
+      <ereg regexp="sip:[0-9]+@127\.0\.0\.1" search_in="hdr" header="Refer-To:"
+            check_it="true" assign_to="refer_to"/>
+      <ereg regexp="Replaces" search_in="msg" check_it_inverse="true"
+            assign_to="no_replaces"/>
+      <ereg regexp="([0-9]+)[[:space:]]+REFER" search_in="hdr" header="CSeq:"
+            check_it="true" assign_to="junk,refer_cseq"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 202 Accepted
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The implicit subscription's one notification: the referral succeeded and
+       the subscription ends with it (RFC 3515 2.4.4, RFC 3420). The id is the
+       CSeq of the REFER this NOTIFY belongs to. -->
+  <send retrans="500" start_txn="notify">
+    <![CDATA[
+      NOTIFY [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: <sip:5551000@127.0.0.1>;tag=[$dut_tag]
+      [last_Call-ID:]
+      CSeq: 1 NOTIFY
+      Max-Forwards: 70
+      [routes]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Event: refer;id=[$refer_cseq]
+      Subscription-State: terminated;reason=noresource
+      Content-Type: message/sipfrag;version=2.0
+      Content-Length: [len]
+
+      SIP/2.0 200 OK
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="notify" timeout="10000"/>
+
+  <!-- The BYE is the verdict. A transferor that read the sipfrag 200 ends the
+       leg it transferred, one grace behind its answer to the NOTIFY, because
+       this peer sends no BYE of its own; the harness pins the delay. Nothing
+       else in this scenario asks for one. -->
+  <recv request="BYE" timeout="30000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check,junk,hold_dir,refer_to,no_replaces"/>
+</scenario>

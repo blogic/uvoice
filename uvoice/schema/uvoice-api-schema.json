@@ -1,0 +1,2368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "uvoice-api-schema.json",
+  "version": "1.8.0",
+  "title": "uvoice ubus API",
+  "description": "Every ubus method the uvoiced daemon answers, on the voice, voice.trace, voice.calltrace and voice.stub objects (voice.stub exists on the UVOICE_HAL_STUB build only). The daemon emits no ubus events; method replies are the whole surface. The root validates one capture envelope {object, method, args, reply}; args may be absent for a NOARG method, reply may be absent for a call answered with a bare status code. Owning functions are cited per property.",
+  "type": "object",
+
+  "oneOf": [
+    { "$ref": "#/$defs/VoiceStatusCall" },
+    { "$ref": "#/$defs/VoiceReloadCall" },
+    { "$ref": "#/$defs/VoiceDumpConfigCall" },
+    { "$ref": "#/$defs/VoiceCdrCall" },
+    { "$ref": "#/$defs/VoiceStatsCall" },
+    { "$ref": "#/$defs/VoiceStatsResetCall" },
+    { "$ref": "#/$defs/VoiceStatsLiveCall" },
+    { "$ref": "#/$defs/VoiceLineTestCall" },
+    { "$ref": "#/$defs/VoiceLoopTestCall" },
+    { "$ref": "#/$defs/VoiceRegisterCall" },
+    { "$ref": "#/$defs/VoiceUnregisterCall" },
+    { "$ref": "#/$defs/VoiceSeizeCall" },
+    { "$ref": "#/$defs/VoiceReleaseCall" },
+    { "$ref": "#/$defs/VoiceDialCall" },
+    { "$ref": "#/$defs/TraceGetCall" },
+    { "$ref": "#/$defs/TraceSetCall" },
+    { "$ref": "#/$defs/CalltraceArmCall" },
+    { "$ref": "#/$defs/CalltraceCancelCall" },
+    { "$ref": "#/$defs/CalltraceStatusCall" },
+    { "$ref": "#/$defs/StubHookCall" },
+    { "$ref": "#/$defs/StubDigitCall" },
+    { "$ref": "#/$defs/StubToneCall" },
+    { "$ref": "#/$defs/StubFlashCall" },
+    { "$ref": "#/$defs/StubRingCall" },
+    { "$ref": "#/$defs/StubRingStopCall" },
+    { "$ref": "#/$defs/StubMediaStatsCall" },
+    { "$ref": "#/$defs/StubStreamCall" },
+    { "$ref": "#/$defs/StubRtpRxCall" },
+    { "$ref": "#/$defs/StubDumpCall" }
+  ],
+
+  "$defs": {
+
+    "U32": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 4294967295,
+      "description": "blobmsg_add_u32 field. ubus and the ucode binding render a value at or past 2^31 sign-extended (negative); the semantic value of a negative reading is value + 2^32."
+    },
+    "I32": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 2147483647,
+      "description": "A signed value traveling in the INT32 slot, rendered signed."
+    },
+    "U64": {
+      "type": "integer",
+      "description": "blobmsg_add_u64 field, rendered as a signed 64-bit integer."
+    },
+    "MosString": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]{2}$",
+      "description": "Two-decimal MOS text, snprintf \"%.2f\" with an isfinite() guard that substitutes 0.00 (cdr.c cdr_media_dump())."
+    },
+    "NoArgs": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A NOARG method; ubus sends {} or nothing."
+    },
+    "EmptyReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The method answers status 0 with no payload."
+    },
+    "LineArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32", "description": "0-based line index; required (ubus.c line_policy)." }
+      },
+      "required": ["line"],
+      "additionalProperties": false
+    },
+
+    "HalStateWord": { "enum": ["down", "attached", "starting", "ready", "failed", "unknown"], "description": "main.c uvoice_hal_state_name(); unknown is the fallback." },
+    "ProtocolWord": {
+      "enum": ["sip", "mgcp"],
+      "description": "voip.base.protocol (cfg/schema.h cfg_protocol_vals)."
+    },
+    "SignalingStateWord": {
+      "enum": ["running", "unavailable"],
+      "description": "proto/proto.c proto_status_dump()."
+    },
+    "SignalingTable": {
+      "type": "object",
+      "description": "proto_status_dump().",
+      "properties": {
+        "protocol": { "$ref": "#/$defs/ProtocolWord" },
+        "state": { "$ref": "#/$defs/SignalingStateWord" },
+        "error": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why no protocol runs (proto_select_from_cfg())."
+        },
+        "available": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProtocolWord" },
+          "uniqueItems": true,
+          "description": "The protocols of the image, in registry order."
+        }
+      },
+      "required": ["protocol", "state", "available"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "unavailable" } },
+            "required": ["state"]
+          },
+          "then": { "required": ["error"] },
+          "else": { "not": { "required": ["error"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "RtPolicyWord": { "enum": ["fifo", "rr", "other", "unknown"], "description": "status.c hal_rt_policy_name(): the scheduling policy a backend thread runs under, read back after the request; unknown when the backend could not read it." },
+    "RegStateWord": { "enum": ["unregistered", "resolving", "trying", "registered", "refreshing", "backoff", "?"], "description": "proto/sip/reg.c sip_reg_state_name(); ? is the fallback. A registration that never initialized reports the literal resolving (account.c account_status_dump())." },
+    "AcctStatusWord": { "enum": ["unregistered", "trying", "registered", "failed", "unknown"], "description": "account.c acct_status_name(): RESOLVING and TRYING collapse to trying, REGISTERED and REFRESHING to registered, BACKOFF to failed." },
+    "TransportWord": { "enum": ["udp", "tcp", "tls"], "description": "account.c acct_transport_name(); udp doubles as the fallback." },
+    "DnsLookupWord": { "enum": ["srv", "addr_srv", "addr"], "description": "proto/shared/resolve.c sip_dns_kind_name(), for the three kinds account.c acct_dns_kind() can derive: srv is the SRV question, addr_srv the A and AAAA one with an SRV question only when the name has no address, addr the A and AAAA one alone." },
+    "DnsAnswerWord": { "enum": ["srv", "addr"], "description": "Which answer built the targets (proto/shared/resolve.c, struct sip_dns_result srv): srv for SRV records, addr for an address answer, the SRV fallback to the address, and a literal." },
+    "DnsSrvModeWord": { "enum": ["auto", "always", "never"], "description": "uci dns_srv_mode (cfg/schema.h cfg_dns_srv_mode_vals): which question a line asks for its next hop. auto follows RFC 3263 4.2 and asks SRV of a port-named name that has no address, always asks SRV whatever port the config names, never asks the address alone." },
+    "ConnStateWord": { "enum": ["free", "connecting", "handshake", "up", "closing", "unknown"], "description": "proto/sip/stream.c sip_conn_state_name()." },
+    "SubStatusWord": { "enum": ["off", "trying", "active", "retry", "refused", "?"], "description": "proto/sip/sub.c sip_sub_status_name()." },
+    "FsmStateWord": {
+      "enum": ["IDLE", "OFFHOOK_DIAL", "COLLECTING", "SPRE_COLLECT", "CALLING", "PROCEEDING", "CONNECTED", "RINGING", "CW_OFFERED", "HOLD_DIAL", "TWO_CALLS", "CONF", "PENDING", "HOLDING", "CLEARING", "ROH", "OOS", "XFER_COLLECT", "SILENT", "?"],
+      "description": "proto/sip/fsm.c fsm_state_name(); the one upper-case vocabulary of the northbound."
+    },
+    "ClearingWord": { "enum": ["busy", "fastbusy", "unobtainable", "quiet", "?"], "description": "proto/sip/line.c clearing_name()." },
+    "MgcpStateWord": {
+      "enum": ["idle", "offhook", "ringing", "connected", "restarting", "out_of_service", "down"],
+      "description": "proto/mgcp/ep.c mgcp_ep_state_name(), the state of one endpoint; down while the endpoints wait for a name (proto/mgcp/proto.c mgcp_state_name(): no domain option and no address of the voice interface)."
+    },
+    "MgcpServiceWord": {
+      "enum": ["restarting", "in_service", "out_of_service", "disconnected"],
+      "description": "proto/mgcp/ep.c mgcp_ep_svc_name(), or disconnected while the endpoint is in the disconnected procedure (proto/mgcp/proto.c service_word())."
+    },
+    "MgcpModeWord": {
+      "enum": ["sendonly", "recvonly", "sendrecv", "confrnce", "inactive"],
+      "description": "proto/mgcp/msg.c mgcp_mode_name() for the modes a connection holds."
+    },
+    "MgcpConnEntry": {
+      "type": "object",
+      "description": "One connection of an endpoint (proto/mgcp/proto.c conns_dump()).",
+      "properties": {
+        "id": { "type": "string", "description": "ConnectionId, 8 hexadecimal digits." },
+        "call_id": { "type": "string", "description": "CallId of the call agent." },
+        "mode": { "$ref": "#/$defs/MgcpModeWord" },
+        "stream": { "$ref": "#/$defs/U32", "description": "The HAL stream, the index of the slot of the connection." },
+        "remote": { "type": "string", "description": "address:port of the remote media, IPv6 in brackets; present iff the stream took a configuration." }
+      },
+      "required": ["id", "call_id", "mode", "stream"],
+      "additionalProperties": false
+    },
+    "MgcpLineEntry": {
+      "type": "object",
+      "description": "One lines[] entry under mgcp (proto/mgcp/proto.c mgcp_status_dump_lines()), one per endpoint; the array is empty while the endpoints wait for a name.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "endpoint": { "type": "string", "description": "The endpoint name, endpoint_pattern expanded." },
+        "service": { "$ref": "#/$defs/MgcpServiceWord" },
+        "state": { "$ref": "#/$defs/MgcpStateWord" },
+        "notified_entity": { "type": "string", "description": "The notified entity of the endpoint, empty without a call agent." },
+        "request_id": { "type": "string", "description": "RequestIdentifier of the request in force, 0 before the first request." },
+        "connections": { "type": "array", "items": { "$ref": "#/$defs/MgcpConnEntry" }, "maxItems": 2 }
+      },
+      "required": ["line", "endpoint", "service", "state", "notified_entity", "request_id", "connections"],
+      "additionalProperties": false
+    },
+    "MgcpSocketWord": {
+      "enum": ["bound", "waiting", "failed"],
+      "description": "proto/mgcp/proto.c socket_word(): bound, waiting for an IPv4 address of the voice interface, or failed to bind until the recovery of the tracker."
+    },
+    "MgcpTable": {
+      "type": "object",
+      "description": "proto/mgcp/proto.c mgcp_status_dump_top(): the gateway. notified_entity is that of the first endpoint, or the configured call agent while no endpoint exists. disconnected and disc_attempts describe the disconnected procedure of RFC 3435 4.4.7; disc_attempts counts the attempts since the last success.",
+      "properties": {
+        "dialect": { "enum": ["rfc3435", "ncs"] },
+        "call_agent": { "type": "string" },
+        "notified_entity": { "type": "string" },
+        "local_port": { "$ref": "#/$defs/U32" },
+        "socket": { "$ref": "#/$defs/MgcpSocketWord" },
+        "disconnected": { "type": "boolean" },
+        "disc_attempts": { "$ref": "#/$defs/U32" },
+        "transactions": {
+          "type": "object",
+          "description": "proto/mgcp/txn.h struct mgcp_txn_stat, and open, the transactions the gateway holds now.",
+          "properties": {
+            "open": { "$ref": "#/$defs/U32" },
+            "created": { "$ref": "#/$defs/U64" },
+            "retransmitted": { "$ref": "#/$defs/U64" },
+            "timeout": { "$ref": "#/$defs/U64" },
+            "transport": { "$ref": "#/$defs/U64" },
+            "denied": { "$ref": "#/$defs/U64" },
+            "absorbed": { "$ref": "#/$defs/U64" },
+            "stray": { "$ref": "#/$defs/U64" },
+            "malformed": { "$ref": "#/$defs/U64" }
+          },
+          "required": ["open", "created", "retransmitted", "timeout", "transport", "denied", "absorbed", "stray", "malformed"],
+          "additionalProperties": false
+        },
+        "commands": { "$ref": "#/$defs/U64", "description": "Commands of the call agent (proto/mgcp/ep.h struct mgcp_ep_stat)." },
+        "errors": { "$ref": "#/$defs/U64", "description": "Responses of class 4xx and 5xx." },
+        "ntfy": { "$ref": "#/$defs/U64" },
+        "rsip": { "$ref": "#/$defs/U64" },
+        "quar_dropped": { "$ref": "#/$defs/U64", "description": "Events the full quarantine buffers discarded." }
+      },
+      "required": ["dialect", "call_agent", "notified_entity", "local_port", "socket", "disconnected", "disc_attempts", "transactions", "commands", "errors", "ntfy", "rsip", "quar_dropped"],
+      "additionalProperties": false
+    },
+    "LegStateWord": {
+      "enum": ["free", "invite-sent", "proceeding", "cancel-sent", "ringing-in", "accept-wait-ack", "active", "reinvite-sent", "reinvite-wait-ack", "bye-sent", "?"],
+      "description": "proto/sip/call.c state_name(), lower-hyphenated."
+    },
+    "SdpCodecWord": {
+      "enum": ["PCMU", "PCMA", "G729", "G722", "opus", "G726-32", "t38", "none"],
+      "description": "proto/shared/sdp.c sdp_codec_name() plus the literal t38 the call sites inject; opus and t38 are lower on purpose. none is the fallback and is suppressed at every call site."
+    },
+    "SdpDirectionWord": { "enum": ["sendrecv", "sendonly", "recvonly", "inactive", "unknown"], "description": "proto/shared/sdp.c sdp_dir_name()." },
+    "SrtpSuiteUpper": { "enum": ["AES_CM_128_HMAC_SHA1_80", "AES_CM_128_HMAC_SHA1_32"], "description": "proto/shared/sdp.c sdp_srtp_suite_name(), the RFC 4568 spelling; the none fallback is suppressed at the call site." },
+    "FailWord": { "enum": ["busy", "congestion", "unobtainable", "quiet", "?"], "description": "proto/proto_media.h proto_fail_name()." },
+    "MediaStateWord": { "enum": ["absent", "pending", "present", "failed"], "description": "cdr.c media_state_names[]." },
+    "LineTestWord": { "enum": ["gr909", "roh", "capacitance", "loop"], "description": "ubus.c line_test_names[]." },
+    "LoopTestModeWord": { "enum": ["self", "cross"], "description": "ubus.c loop_test_mode_get(): the two words the loop test surface takes. The reply carries a third, off, for a board that runs no mode." },
+    "HalFeatureWord": { "enum": ["g729", "g726", "t38", "vbd", "line_test", "polarity", "mwi_lamp", "metering", "kernel_rtp", "conf", "srtp", "wideband", "g729b", "ipv6_media", "rtcp_addr", "region_hook", "dtmf_relay", "dtmf_playout", "loop"], "description": "status.c feature_names[], bit-gated. g729b is narrower than g729 and never implies it: it says the backend's G.729 carries Annex B, which is what lets a leg advertise annexb=yes and arm the transmit DTX. ipv6_media says the backend carries a media stream whose addresses are IPv6, and stream_config_set refuses every IPv6 address without it. rtcp_addr says the backend connects the RTCP socket to the address the peer named in an RFC 3605 a=rtcp attribute. region_hook says the backend programs each line's hook windows from its own region data, so the core never pushes a window to it (libudsp); the stub takes the push. dtmf_relay says the backend relays a digit it detects on the phone as an RFC 4733 event itself, so the core sends none for a measured digit; dtmf_playout says the backend renders a telephone-event it receives toward the phone itself, so the core plays none for a wire digit (hal.h HAL_FEAT_DTMF_RELAY, HAL_FEAT_DTMF_PLAYOUT). loop says the backend plays a line the capture of a line, its own or another, a fixed delay later (hal.h line_loop_set), which is the audio path of the manufacturing loop test; the core reads the bit before it arms." },
+    "HalCidFormatWord": { "enum": ["bellcore-fsk", "etsi-fsk", "etsi-rpas", "etsi-dtas", "dtmf", "ntt", "etsi-lr-dtas", "dtmf-dtas", "unknown"], "description": "hal.h hal_cid_format_name(): the eight enum hal_cid_format transports in the words the libudsp region grammar uses ([cid] format); unknown is the fallback." },
+    "FlashServiceWord": { "enum": ["off", "split", "drop", "unknown"], "description": "hal.h hal_flash_service_name(): the region's hook flash policy ([hook] flash_service in the region file); unknown is the fallback." },
+    "HalCodecWord": { "enum": ["pcmu", "pcma", "g729", "g726_32", "t38", "vbd_pcmu", "vbd_pcma", "g722", "opus"], "description": "status.c codec_names[], lower snake; a different spelling of the same codecs than sdp_codec_name()." },
+    "StubCodecWord": { "enum": ["none", "pcmu", "pcma", "g729", "g726_32", "t38", "vbd_pcmu", "vbd_pcma", "g722", "opus", "unknown"], "description": "hal/stub/stub.c codec_name(): the hal codec vocabulary plus none." },
+    "StubSrtpWord": { "enum": ["none", "aes_cm_128_hmac_sha1_80", "aes_cm_128_hmac_sha1_32", "unknown"], "description": "hal/stub/stub.c srtp_suite_name(), lower; differs from the leg's upper spelling." },
+    "LecPolicyWord": { "enum": ["voice", "modem", "fax", "unknown"], "description": "status.c status_lec_kind_word(): the canceller policy a line runs under, in the lower spelling a leg's fax_kind uses. voice is enum hal_passthrough HAL_PASSTHROUGH_OFF: no carrier is named, so the canceller follows its configuration. It is a POLICY word and not the call's mode: a T.38 leg reads modem here, because the engine runs the modem policy for the image session (udsp/src/core/stream.c media_passthrough_kind()). Whether the filter ran is state.ec. unknown is the fallback for a kind outside the enum, which only a backend record can carry." },
+    "LecPolicySourceWord": { "enum": ["config", "description", "tone", "engine"], "description": "status.c lec_policy_resolve(): what named the policy. description is a running call leg that is not on local hold (call.c calls_line_fax_kind()); tone is the backend's answer-tone disabler latch; config is neither, so the channel configuration stands. engine is a live engine reading (hal_lec_stats.passthrough) whose kind differs from the daemon's own resolution in either direction, so the daemon reports the engine's kind and says it cannot name the cause. The precedence is the engine's own (udsp/src/core/chan.c chan_passthrough_get()): a committed description wins over a latch." },
+    "SampleWord": { "enum": ["live", "last_call", "never"], "description": "status.c: whether the counters of a jb or lec row were read this frame (live), kept from the last successful read of a stream or canceller that no longer answers (last_call, with stamp_ms), or never read in this daemon's lifetime (never). Replaces the active bool plus the stamp_ms == 0 sentinel of schema 0.5." },
+    "MonitorSampleWord": { "enum": ["sampled", "stale", "never"], "description": "status.c monitor_sample_name(): the state of a status monitor row, its own vocabulary and not SampleWord. sampled is a reading that stands; stale is a reading whose last read answered no data, so the values are the previous reading; never is a line with no reading in this daemon's lifetime, a backend with no monitor op, and a dead line. sampled and stale both carry stamp_ms, which is what this array does differently from the jb and lec rows." },
+    "JbModeWord": { "enum": ["adaptive", "fixed", "off", "unknown"], "description": "hal.h hal_jb_mode_name() over hal_jb_stats.mode: the playout mode the buffer runs (udsp/src/rtp/jb.c udsp_jb_stats() copies struct udsp_jb mode). It is the value the engine ACCEPTED, after udsp_jb_init_cfg() falls an unknown request back to adaptive. fixed under a G.711 passthrough pins the depth the line adapted to at the switch (udsp/src/core/stream.c stream_jb_pin()), so target_ms then differs from the uci jitter_target on purpose. off reads target_ms 0 with a nonzero depth_ms. unknown is the fallback for a value outside the enum." },
+    "LecEcWord": { "enum": ["off", "on"], "description": "The canceller filter on the last engine frame (hal_lec_stats.ec_active, measured by udsp/src/core/chan.c chan_lec_run() and never recomputed): on means the filter ran; off means it was skipped whole, under the modem policy, a channel configuration that switched it off, or a line whose media does not run." },
+    "LecNlpWord": { "enum": ["off", "on", "acting"], "description": "The nonlinear processor on the last engine frame, one word for the two flags of hal_lec_stats: off is nlp_enabled 0 (the policy or the configuration asks for no processor, and any frame the filter did not run); on is nlp_enabled 1 with nlp_active 0 (the processor was on and let the residual stand); acting is nlp_active 1 (it replaced the residual)." },
+    "HalStatusWord": { "enum": ["ok", "transient", "unsupported", "fatal", "unknown"], "description": "hal.h hal_status_name() over enum hal_status. unknown is the renderer fallback for a value outside the enum, which no shipped backend returns." },
+    "DtmfModeWord": { "enum": ["inband", "rfc2833", "info", "unknown"], "description": "uci.c channel_dump(): the canonical word of enum cfg_dtmf_mode; the uci aliases sipinfo and sip_info dump as info. unknown is the renderer fallback for a value outside the enum, which the loader never produces." },
+    "FlashRelayWord": { "enum": ["off", "rfc2833", "info", "unknown"], "description": "uci.c channel_dump(): enum cfg_flash_relay by its uci word." },
+    "RefresherWord": { "enum": ["uac", "uas", "unspecified", "unknown"], "description": "uci.c channel_dump(): enum cfg_refresher by its uci word." },
+    "FwdDiscBatteryWord": { "enum": ["none", "remove", "reverse", "unknown"], "description": "uci.c channel_dump(): enum cfg_fwd_disc_battery by its uci word." },
+    "LecToneActionWord": { "enum": ["LATCH", "DEMOTE", "RELEASE_QUIET", "RELEASE_TOPOLOGY", "RELEASE_CALLER", "UNKNOWN"], "description": "hal.h hal_lec_reason_name(), the spelling udsp-cli prints. LATCH is a kind the disabler took or raised, DEMOTE the one weaker kind a standing latch admits (a V.21 preamble taking a modem latch to the fax kind). Two releases are its own rules: the holding band fell quiet (G.168 7.8), or the governing stream count of the line moved. RELEASE_CALLER is the one a caller asked for, where call.c call_fax_exit() read a short answer tone as a false one and took the leg back to voice." },
+    "ToneDirWord": { "enum": ["LOCAL", "REMOTE", "UNKNOWN"], "description": "hal.h hal_tone_dir_name(): LOCAL is the feed from the phone, REMOTE the feed from the wire. UPPER because it is the backend's own vocabulary, shared with udsp-cli." },
+    "ToneDetectWord": { "enum": ["OTHER", "CNG", "CED", "ANS", "ANSAM", "ANSBAR", "V21_PREAMBLE", "FAX_CM", "FAX_TIMEOUT", "MODEM", "UNKNOWN"], "description": "hal.h hal_tone_detect_name(), the spelling udsp-cli prints; UNKNOWN is the fallback for a code outside enum hal_tone_detect." },
+
+    "MediaTable": {
+      "type": "object",
+      "description": "The media counter table cdr.c cdr_media_dump() opens itself, shared by a cdr record, a stats_live reply and a status streams row. Jitter and delay figures are vendor raw (the mediaInfo_t ms vs rtp_stats_t jiffies contradiction is recorded at the emitter).",
+      "properties": {
+        "packets_sent": { "$ref": "#/$defs/U64" },
+        "packets_recv": { "$ref": "#/$defs/U64" },
+        "packets_lost": { "$ref": "#/$defs/U64" },
+        "packets_discarded": { "$ref": "#/$defs/U64" },
+        "loss_rate": { "$ref": "#/$defs/U64" },
+        "loss_rate_far": { "$ref": "#/$defs/U64" },
+        "jitter_avg": { "$ref": "#/$defs/U64" },
+        "jitter_max": { "$ref": "#/$defs/U64" },
+        "jitter_far": { "$ref": "#/$defs/U64" },
+        "rtt_avg": { "$ref": "#/$defs/U64" },
+        "rtt_max": { "$ref": "#/$defs/U64" },
+        "bytes_sent": { "$ref": "#/$defs/U64" },
+        "bytes_recv": { "$ref": "#/$defs/U64" },
+        "mos_lq": { "$ref": "#/$defs/MosString" },
+        "mos_cq": { "$ref": "#/$defs/MosString" },
+        "rfactor": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["packets_sent", "packets_recv", "packets_lost", "packets_discarded", "loss_rate", "loss_rate_far", "jitter_avg", "jitter_max", "jitter_far", "rtt_avg", "rtt_max", "bytes_sent", "bytes_recv", "mos_lq", "mos_cq", "rfactor"],
+      "additionalProperties": false
+    },
+
+    "JbCounters": {
+      "type": "object",
+      "description": "The jitter buffer record cdr.c cdr_jb_dump() writes into whatever table is open: a cdr record's jb table and a status jb row share it. mode is the playout mode the engine runs (JbModeWord); the 19 counters follow it.",
+      "properties": {
+        "mode": { "$ref": "#/$defs/JbModeWord" },
+        "frames_out": { "$ref": "#/$defs/U64" },
+        "plc": { "$ref": "#/$defs/U64" },
+        "cn": { "$ref": "#/$defs/U64" },
+        "silence": { "$ref": "#/$defs/U64" },
+        "late_drop": { "$ref": "#/$defs/U64" },
+        "dup_drop": { "$ref": "#/$defs/U64" },
+        "overflow_drop": { "$ref": "#/$defs/U64" },
+        "hold_drop": { "$ref": "#/$defs/U64" },
+        "resync_discard_ms": { "$ref": "#/$defs/U64" },
+        "resyncs": { "$ref": "#/$defs/U64" },
+        "starve_resyncs": { "$ref": "#/$defs/U64" },
+        "cn_reanchors": { "$ref": "#/$defs/U64" },
+        "underruns": { "$ref": "#/$defs/U64" },
+        "skew_drops": { "$ref": "#/$defs/U64" },
+        "skew_inserts": { "$ref": "#/$defs/U64" },
+        "target_ms": { "$ref": "#/$defs/U32" },
+        "depth_ms": { "$ref": "#/$defs/U32" },
+        "jitter_ms": { "$ref": "#/$defs/U32" },
+        "pool_free": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["mode", "frames_out", "plc", "cn", "silence", "late_drop", "dup_drop", "overflow_drop", "hold_drop", "resync_discard_ms", "resyncs", "starve_resyncs", "cn_reanchors", "underruns", "skew_drops", "skew_inserts", "target_ms", "depth_ms", "jitter_ms", "pool_free"]
+    },
+
+    "StatusJbRow": {
+      "description": "One row of the constant status jb array (status.c jb_row_write() + cdr_jb_dump()), one per (line, stream) for the life of the daemon. sample names the state of the record: live (read this frame, no stamp_ms), last_call (the last reading kept after the stream stopped, stamp_ms is the CLOCK_MONOTONIC ms it was taken) and never (the pair never answered; the counters read 0 and mode reads unknown, and neither is a measurement). A T.38 stream publishes no jitter buffer, so its row falls to last_call for the length of the image session.",
+      "allOf": [
+        { "$ref": "#/$defs/JbCounters" },
+        {
+          "if": { "properties": { "sample": { "const": "last_call" } }, "required": ["sample"] },
+          "then": { "required": ["stamp_ms"] },
+          "else": { "not": { "required": ["stamp_ms"] } }
+        }
+      ],
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "stream": { "$ref": "#/$defs/U32" },
+        "sample": { "$ref": "#/$defs/SampleWord" },
+        "stamp_ms": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["line", "stream", "sample"],
+      "unevaluatedProperties": false
+    },
+
+    "LecConfigTable": {
+      "type": "object",
+      "description": "What the operator asked for: the five lec uci options of the line's LIVE channel copy (line/line.c struct line chan, the copy channel_cfg_build() derives from; a reload stages a new copy that lands at the next IDLE). Keys are the uci option names without the lec_ prefix. control 0 or absent makes the daemon IGNORE enable and nlp, which is why applied can differ from this table. nlp is present only when the uci option carries a readable value, like the lec_nlp_set gate of dump_config.",
+      "properties": {
+        "control": { "type": "boolean" },
+        "enable": { "type": "boolean" },
+        "nlp": { "type": "boolean" },
+        "tone_latch": { "type": "boolean" },
+        "tone_force_disable": { "type": "boolean" }
+      },
+      "required": ["control", "enable", "tone_latch", "tone_force_disable"],
+      "additionalProperties": false
+    },
+
+    "LecAppliedTable": {
+      "type": "object",
+      "description": "What the daemon pushed to the DSP: the canceller fields of the hal_channel_cfg the last line/line.c detector_arm() sent at a seize (cfg/cfg.h cfg_channel_lec_effective() resolves control/enable/nlp into ec and nlp; the tone pair travels whatever control holds). It is a RECORD of that push, not a derivation: stamp_ms is the CLOCK_MONOTONIC ms of the push, status its hal_status (the two-try result), and pending says the view channel_cfg_build() would push now differs from the one recorded, which is a config change that has not reached the DSP because no seize ran since. The table is absent until the first push of the daemon's life.",
+      "properties": {
+        "ec": { "type": "boolean" },
+        "nlp": { "type": "boolean" },
+        "tone_latch": { "type": "boolean" },
+        "tone_force_disable": { "type": "boolean" },
+        "stamp_ms": { "$ref": "#/$defs/U32" },
+        "status": { "$ref": "#/$defs/HalStatusWord" },
+        "pending": { "type": "boolean" }
+      },
+      "required": ["ec", "nlp", "tone_latch", "tone_force_disable", "stamp_ms", "status", "pending"],
+      "additionalProperties": false
+    },
+
+    "LecPolicyTable": {
+      "type": "object",
+      "description": "What the canceller runs under and what named it (status.c lec_policy_resolve()). kind is the engine's own passthrough field on a live sample (hal_lec_stats.passthrough) and the daemon's resolution otherwise; source is the daemon's resolution, or engine when the live engine kind differs from it in either direction. The tone block is the LAST move of the backend's answer-tone disabler (uvoice.h struct uvoice_lec_policy), absent until one arrives and dropped again when the line reaches its rest state, because the DSP clears its own latch at teardown without a record. A release answers no tone (hal.h enum hal_lec_reason), so it carries tone_action and tone_stamp_ms and neither tone nor tone_dir.",
+      "allOf": [
+        {
+          "if": { "properties": { "tone_action": { "enum": ["LATCH", "DEMOTE"] } }, "required": ["tone_action"] },
+          "then": { "required": ["tone", "tone_dir"] },
+          "else": { "not": { "anyOf": [ { "required": ["tone"] }, { "required": ["tone_dir"] } ] } }
+        }
+      ],
+      "dependentRequired": {
+        "tone_action": ["tone_stamp_ms"],
+        "tone_stamp_ms": ["tone_action"],
+        "tone": ["tone_dir", "tone_action", "tone_stamp_ms"],
+        "tone_dir": ["tone", "tone_action", "tone_stamp_ms"]
+      },
+      "properties": {
+        "kind": { "$ref": "#/$defs/LecPolicyWord" },
+        "source": { "$ref": "#/$defs/LecPolicySourceWord" },
+        "tone": { "$ref": "#/$defs/ToneDetectWord" },
+        "tone_dir": { "$ref": "#/$defs/ToneDirWord" },
+        "tone_action": { "$ref": "#/$defs/LecToneActionWord" },
+        "tone_stamp_ms": { "$ref": "#/$defs/U32", "description": "The daemon's CLOCK_MONOTONIC millisecond, truncated to 32 bits, at which the move arrived (uvoice.h uvoice_lec_policy_set() samples uvoice_mono_ms()); the same clock as the row's stamp_ms and applied.stamp_ms, so an age computed from any of them is consistent. The backend's own event tick (hal_event.stamp_ms) is not on the wire. Presence answers whether a move happened." }
+      },
+      "required": ["kind", "source"],
+      "additionalProperties": false
+    },
+
+    "LecStateTable": {
+      "type": "object",
+      "description": "The engine's reading of the canceller (hal.h hal_lec_stats, copied by the udsp backend one field at a time). ec and nlp are the effective switches on the last frame (LecEcWord, LecNlpWord); the rest are the filter's own figures. erle_mdb is signed milli-decibels; the two micro-unit figures travel in the u64 slot so a saturated reading cannot render negative. skip_frames counts the frames whose whole reference window was digital silence, so the filter ran no taps on them; each is also a hold frame. ref_delay_samples and ref_ready are the engine's loop delay, shared by every line. ref_delay_samples is the reference the engine applied and not its last measurement. The rule compares the unclamped measurement against the applied value and keeps it within one period. It publishes the clamp of what stands. The published value can therefore stand more than one period from the measurement. A re-time can leave it unchanged. Under the modem policy the filter is skipped whole, so ec reads off, nlp reads off and every counter stands still: the row stays live because the engine keeps publishing the instance it holds (udsp/src/core/chan.c chan_lec_publish()). An open loop stops the filter in the same way, and loop_open reads true there, so a reading taken after a handset hang-up keeps the counters of the call.",
+      "properties": {
+        "ec": { "$ref": "#/$defs/LecEcWord" },
+        "nlp": { "$ref": "#/$defs/LecNlpWord" },
+        "double_talk": { "type": "boolean" },
+        "tail_ms": { "$ref": "#/$defs/U32" },
+        "taps": { "$ref": "#/$defs/U32" },
+        "frames": { "$ref": "#/$defs/U64" },
+        "hold_frames": { "$ref": "#/$defs/U64" },
+        "skip_frames": { "$ref": "#/$defs/U64" },
+        "diverge_resets": { "$ref": "#/$defs/U64" },
+        "retimes": { "$ref": "#/$defs/U64", "description": "The resets the line's filter took from the reference (status.c lec_state_write(), from udsp/src/core/chan.c chan_lec_run()). Two causes ask for a reset. The first is a measured loop delay that moved beyond one period of the applied one, compared before the reach clamp. The engine re-latches that delay after every catch-up episode, and a re-latch inside the tolerance counts nothing. The second is a replacement engine, whatever it goes on to measure. Several moves decided while the filter did not run make one reset and one count on the frame it runs again. A canceller created after a move starts at 0 and is not reset by it. The count belongs to the line. It survives the reset it names, like diverge_resets. It reads 0 for a canceller the line took after a release." },
+        "probes": { "$ref": "#/$defs/U64" },
+        "nlp_active_frames": { "$ref": "#/$defs/U64", "description": "The frames on which the nonlinear processor replaced the residual (status.c lec_state_write(), from udsp/src/dsp/lec.c nlp_apply()). The six nlp_*_frames counts take one count per frame the filter ran with the processor on, under the first condition that refused the processor, in the order quiet, double talk, not echo-like, the ERLE gate, then the engage wait, then acted. They add up to frames less the frames the processor was off for. A re-time zeroes them with frames, and a release ends them with the instance." },
+        "nlp_wait_frames": { "$ref": "#/$defs/U64", "description": "The eligible frames inside the engage run, before the processor acts (at most seven per run)." },
+        "nlp_erle_frames": { "$ref": "#/$defs/U64", "description": "The frames the ERLE gate refused: the tracked return loss, alone or with the learned hybrid gain, stood under the bound." },
+        "nlp_unlike_frames": { "$ref": "#/$defs/U64", "description": "The frames refused because the echo estimate did not explain the near-end signal." },
+        "nlp_dt_frames": { "$ref": "#/$defs/U64", "description": "The frames refused by the standing double-talk verdict." },
+        "nlp_quiet_frames": { "$ref": "#/$defs/U64", "description": "The frames whose reference window was inactive, digital silence included, while the processor was on." },
+        "erle_mdb": { "$ref": "#/$defs/I32" },
+        "coef_energy_micro": { "$ref": "#/$defs/U64" },
+        "coef_peak_tap": { "$ref": "#/$defs/U32", "description": "The index of the largest coefficient, counted from tap 0 of the applied reference (ref_delay_samples). The reference stands one period under the loop, so an echo that arrives at the loop reads one period in: 80 at 8 kHz, 160 at 16 kHz. A live line reads later by the lag of the path outside the engine rings. It reads 0 while the filter holds no energy; read it beside coef_energy_micro." },
+        "echo_gain_micro": { "$ref": "#/$defs/U64" },
+        "ref_delay_samples": { "$ref": "#/$defs/U32" },
+        "ref_ready": { "type": "boolean" },
+        "loop_open": { "type": "boolean", "description": "True when the tick held the filter because the loop was open (udsp/src/core/chan.c chan_lec_run()). The run reads the level that the previous tick consumed, so the flag follows the loop one tick late. It is the reason a row reads ec off with the counters of a call behind it, and it tells that row apart from a policy or a channel configuration that switched the filter off." }
+      },
+      "required": ["ec", "nlp", "double_talk", "tail_ms", "taps", "frames", "hold_frames", "skip_frames", "diverge_resets", "retimes", "probes", "nlp_active_frames", "nlp_wait_frames", "nlp_erle_frames", "nlp_unlike_frames", "nlp_dt_frames", "nlp_quiet_frames", "erle_mdb", "coef_energy_micro", "coef_peak_tap", "echo_gain_micro", "ref_delay_samples", "ref_ready", "loop_open"],
+      "additionalProperties": false
+    },
+
+    "StatusLecRow": {
+      "type": "object",
+      "description": "One row of the constant status lec array (status.c lec_row_write()), one per line for the life of the daemon. Four layers, each its own table: config (what the operator asked for, uci), applied (what the daemon pushed to the DSP and whether that push is current), policy (what the canceller runs under and why) and state (what the engine measured). sample governs state exactly as it governs a jb row: live and last_call carry state (last_call with stamp_ms, the CLOCK_MONOTONIC ms of the reading), never carries none, because a line that never answered has nothing to measure. config and policy are present in every row: a line that never ran a canceller still has a configuration and still runs a policy. applied is absent until the first push. The udsp engine refuses a reading only for a line with NO canceller instance (no stream configured since the last release; udsp_line_lec_stats()), so a bypassed canceller reads live with state.ec off rather than falling to last_call as schema 0.5 did.",
+      "allOf": [
+        {
+          "if": { "properties": { "sample": { "const": "last_call" } }, "required": ["sample"] },
+          "then": { "required": ["stamp_ms"] },
+          "else": { "not": { "required": ["stamp_ms"] } }
+        },
+        {
+          "if": { "properties": { "sample": { "const": "never" } }, "required": ["sample"] },
+          "then": { "not": { "required": ["state"] } },
+          "else": { "required": ["state"] }
+        }
+      ],
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "sample": { "$ref": "#/$defs/SampleWord" },
+        "stamp_ms": { "$ref": "#/$defs/U32" },
+        "config": { "$ref": "#/$defs/LecConfigTable" },
+        "applied": { "$ref": "#/$defs/LecAppliedTable" },
+        "policy": { "$ref": "#/$defs/LecPolicyTable" },
+        "state": { "$ref": "#/$defs/LecStateTable" }
+      },
+      "required": ["line", "sample", "config", "policy"],
+      "additionalProperties": false
+    },
+
+    "StatusMonitorRow": {
+      "type": "object",
+      "description": "One row of the constant status monitor array (status.c monitor_row_write()), one per line for the life of the daemon: the analog state of the line, read from the backend's cached SLIC reading (hal.h struct hal_monitor, udsp.h udsp_line_monitor()). sample carries this array's own vocabulary. A sampled row holds a reading; a stale row holds the previous reading, because the last read answered no data (the vendor API holds a channel disabled after a failed converter start); a never row holds none, and a backend with no monitor op, a line the backend refuses and a dead line all read never. The measurements, the raw words and the six decoded booleans stand in a sampled and a stale row alone. The three fault fields stand in EVERY row, a never row included: they are the backend engine's fault state of the line at the time of the call, not of the sample, and they are defined before the first reading. Units are mV, uA and mW; the voltages and currents are signed.",
+      "allOf": [
+        {
+          "if": { "properties": { "sample": { "const": "never" } }, "required": ["sample"] },
+          "then": { "propertyNames": { "enum": ["line", "sample", "fault_bits", "fault_open", "fault_held"] } },
+          "else": { "required": ["stamp_ms", "vtr_mv", "vtip_mv", "vring_mv", "vlong_mv", "vbat_mv", "vdc_mv", "itr_ua", "itip_ua", "iring_ua", "ilong_ua", "p_hvic_mw", "vbat_tgt_mv", "vbat_irq_th_mv", "pd_dcdc", "dcdc_status", "lcrrtp", "linefeed", "dcdc_down", "ovlo", "settled", "voc_err", "lcr", "rtp"] }
+        }
+      ],
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "sample": { "$ref": "#/$defs/MonitorSampleWord" },
+        "stamp_ms": { "$ref": "#/$defs/U32", "description": "The CLOCK_MONOTONIC millisecond the reading was taken at, truncated to 32 bits, the clock every other stamp of this reply uses. It rides on a sampled AND on a stale row, where the jb and lec rows carry an instant on last_call alone: a monitor reading is up to ten seconds old by design, because the backend samples the part on its own cadence." },
+        "vtr_mv": { "$ref": "#/$defs/I32", "description": "Tip to ring voltage." },
+        "vtip_mv": { "$ref": "#/$defs/I32" },
+        "vring_mv": { "$ref": "#/$defs/I32" },
+        "vlong_mv": { "$ref": "#/$defs/I32", "description": "Longitudinal voltage." },
+        "vbat_mv": { "$ref": "#/$defs/I32", "description": "The battery the converter delivers." },
+        "vdc_mv": { "$ref": "#/$defs/I32", "description": "Reads 0 on the Si3218x family, which measures no VDC." },
+        "itr_ua": { "$ref": "#/$defs/I32", "description": "Loop current, tip to ring." },
+        "itip_ua": { "$ref": "#/$defs/I32" },
+        "iring_ua": { "$ref": "#/$defs/I32" },
+        "ilong_ua": { "$ref": "#/$defs/I32" },
+        "p_hvic_mw": { "$ref": "#/$defs/I32", "description": "The power the high voltage interface circuit dissipates." },
+        "vbat_tgt_mv": { "$ref": "#/$defs/I32", "description": "The dynamic battery target the part tracks. It reads 0 until the converter has come up, so a deficit against it means nothing before that." },
+        "vbat_irq_th_mv": { "$ref": "#/$defs/I32", "description": "The battery error the part alarms on." },
+        "pd_dcdc": { "$ref": "#/$defs/U32", "description": "The raw PD_DCDC word (RAM 1538); bit 20 is the power-down status dcdc_down decodes." },
+        "dcdc_status": { "$ref": "#/$defs/U32", "description": "The raw DCDC_STATUS word (RAM 1551); bit 22 is the over-voltage lock-out ovlo decodes." },
+        "lcrrtp": { "$ref": "#/$defs/U32", "description": "The raw LCRRTP register (reg 34); bits 3, 1 and 0 are voc_err, lcr and rtp." },
+        "linefeed": { "$ref": "#/$defs/U32", "description": "The raw LINEFEED register (reg 30): the requested state in bits 2:0 and the actual state in bits 6:4." },
+        "dcdc_down": { "type": "boolean", "description": "The converter is in shutdown." },
+        "ovlo": { "type": "boolean", "description": "The converter locked out on over-voltage. It never restarts by itself." },
+        "settled": { "type": "boolean", "description": "The requested and the actual linefeed states agree, in an active or on-hook-transmission state." },
+        "voc_err": { "type": "boolean" },
+        "lcr": { "type": "boolean", "description": "Loop closure." },
+        "rtp": { "type": "boolean", "description": "Ring trip." },
+        "fault_bits": { "$ref": "#/$defs/U32", "description": "The last fault set the backend engine read for this line (udsp/src/include/udsp/event.h enum udsp_fault_bit); 0 is no fault." },
+        "fault_open": { "type": "boolean", "description": "The feed is held open for a fault trial or a recovery." },
+        "fault_held": { "type": "boolean", "description": "A hold is in force that no fault trial ends. It lifts at the next start, or, for a clock fault alone, when the clocks return." }
+      },
+      "required": ["line", "sample", "fault_bits", "fault_open", "fault_held"],
+      "additionalProperties": false
+    },
+
+    "StatusStreamRow": {
+      "type": "object",
+      "description": "One live media row (status.c stream_row_dump()): the counters stats_live fetches slowly, from the fast stream_stats_get op where the backend can. ui_slot names the UI slot whose call leg owns the stream (proto/proto.h ops->stream_of_slot; proto/sip/call.c call_slot_stream() under sip) and is absent for a stream no leg owns.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "stream": { "$ref": "#/$defs/U32" },
+        "ui_slot": { "$ref": "#/$defs/U32" },
+        "media": { "$ref": "#/$defs/MediaTable" }
+      },
+      "required": ["line", "stream", "media"],
+      "additionalProperties": false
+    },
+
+    "StatusDiagStreamRow": {
+      "type": "object",
+      "description": "One stream row of the diag table (status.c diag_stream_row_dump(), from the backend getter udsp_stream_diag_get_op()): the transport and encryption counters of a stream that answered. A stream the getter refuses has NO row, so an idle stream is absent rather than a row of zeros. net_drops, net_stale and net_trunc are the receive path's refusals (a full ring refusing the newest datagram, a full ring dropping the oldest, and a datagram too long or refused by SRTP); tx_fail counts every failed send, media and keepalive alike, and punch_sent the empty datagrams that hold the conntrack tuple open (RFC 6263 4.1). The five SRTP counters read 0 on a plain RTP stream. A new description restarts the five transport counters, including a re-INVITE that changes the codec clock; a new SRTP session restarts the five encryption counters and a rekey does not.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "stream": { "$ref": "#/$defs/U32" },
+        "net_drops": { "$ref": "#/$defs/U64" },
+        "net_stale": { "$ref": "#/$defs/U64" },
+        "net_trunc": { "$ref": "#/$defs/U64" },
+        "tx_fail": { "$ref": "#/$defs/U64" },
+        "punch_sent": { "$ref": "#/$defs/U64" },
+        "srtp_protect_ok": { "$ref": "#/$defs/U64" },
+        "srtp_protect_fail": { "$ref": "#/$defs/U64" },
+        "srtp_unprotect_ok": { "$ref": "#/$defs/U64" },
+        "srtp_unprotect_auth_fail": { "$ref": "#/$defs/U64" },
+        "srtp_unprotect_replay": { "$ref": "#/$defs/U64" }
+      },
+      "required": ["line", "stream", "net_drops", "net_stale", "net_trunc", "tx_fail", "punch_sent", "srtp_protect_ok", "srtp_protect_fail", "srtp_unprotect_ok", "srtp_unprotect_auth_fail", "srtp_unprotect_replay"],
+      "additionalProperties": false
+    },
+
+    "StatusDiagEngineRow": {
+      "type": "object",
+      "description": "One snapshot of the backend engine (status.c diag_engine_dump(), from the backend getter udsp_engine_diag_get_op()). The backend's watchdog publishes it once per period, one second by default, so the table is ABSENT before the first publication and the fields describe one instant together. serial counts the engines this backend made, so a change of it says the engine was replaced. interval is the tick interval histogram, read by position: the upper edges are 9, 11, 12, 15, 20, 30 and 50 milliseconds and the last bucket holds every interval above 50 ms. The counters are cumulative. delay_ref, loop_ref, delay_drift_min and delay_drift_max are SIGNED sample counts. They travel in the INT32 slot, which the json renderer prints signed, so a negative reading reads as itself; every other number here is unsigned. period_us is the tick period the engine runs and granted_periods the buffer the TDM device granted. running says the tick thread runs, stopped_fatal that it stopped on a fault it cannot recover from, and delay_calibrated that the loop delay measurement stands.",
+      "properties": {
+        "serial": { "$ref": "#/$defs/U64" },
+        "ticks": { "$ref": "#/$defs/U64" },
+        "interval": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/U64" } },
+        "interval_min_us": { "$ref": "#/$defs/U64" },
+        "interval_max_us": { "$ref": "#/$defs/U64" },
+        "capture_stalls": { "$ref": "#/$defs/U64" },
+        "delay_stalls": { "$ref": "#/$defs/U64" },
+        "xruns": { "$ref": "#/$defs/U64" },
+        "holds": { "$ref": "#/$defs/U64" },
+        "capture_drops": { "$ref": "#/$defs/U64" },
+        "trim_drops": { "$ref": "#/$defs/U64" },
+        "playback_expired": { "$ref": "#/$defs/U64" },
+        "recover_failures": { "$ref": "#/$defs/U64" },
+        "read_errors": { "$ref": "#/$defs/U64" },
+        "write_errors": { "$ref": "#/$defs/U64" },
+        "cal_restarts": { "$ref": "#/$defs/U64" },
+        "delay_ref": { "$ref": "#/$defs/I32" },
+        "loop_ref": { "$ref": "#/$defs/I32" },
+        "delay_drift_min": { "$ref": "#/$defs/I32" },
+        "delay_drift_max": { "$ref": "#/$defs/I32" },
+        "granted_periods": { "$ref": "#/$defs/U32" },
+        "period_us": { "$ref": "#/$defs/U32" },
+        "running": { "type": "boolean" },
+        "stopped_fatal": { "type": "boolean" },
+        "delay_calibrated": { "type": "boolean" }
+      },
+      "required": ["serial", "ticks", "interval", "interval_min_us", "interval_max_us", "capture_stalls", "delay_stalls", "xruns", "holds", "capture_drops", "trim_drops", "playback_expired", "recover_failures", "read_errors", "write_errors", "cal_restarts", "delay_ref", "loop_ref", "delay_drift_min", "delay_drift_max", "granted_periods", "period_us", "running", "stopped_fatal", "delay_calibrated"],
+      "additionalProperties": false
+    },
+
+    "StatusDiagTable": {
+      "type": "object",
+      "description": "The backend's own diagnostic counters (status.c status_diag_dump()). The whole table is ABSENT on a backend that carries neither getter, which is the stub backend: an empty table there would read as a backend with nothing to report. streams is always present and holds one row per stream that answered, so it is empty while no stream runs. engine is present once the backend published a snapshot.",
+      "properties": {
+        "streams": { "type": "array", "items": { "$ref": "#/$defs/StatusDiagStreamRow" } },
+        "engine": { "$ref": "#/$defs/StatusDiagEngineRow" }
+      },
+      "required": ["streams"],
+      "additionalProperties": false
+    },
+
+    "JbEventRow": {
+      "type": "object",
+      "description": "One event cache row (status.c hal_jb_event_dump()): the last HAL_EVENT_JB_UPDATE of a stream. A slot that never reported is left out; a row of zeros would read as a healthy buffer.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "stream": { "$ref": "#/$defs/U32" },
+        "total": { "$ref": "#/$defs/U64" },
+        "drop": { "$ref": "#/$defs/U64" },
+        "size_ms": { "$ref": "#/$defs/U32" },
+        "jitter_avg": { "$ref": "#/$defs/U32" },
+        "stamp_ms": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["line", "stream", "total", "drop", "size_ms", "jitter_avg", "stamp_ms"],
+      "additionalProperties": false
+    },
+
+    "KeepaliveTable": {
+      "type": "object",
+      "description": "account.c account_ka_dump(); present iff the keepalive machine initialized, independent of registration init.",
+      "properties": {
+        "crlf_sent": { "$ref": "#/$defs/U64" },
+        "crlf_skipped": { "$ref": "#/$defs/U64" },
+        "crlf_failed": { "$ref": "#/$defs/U64" },
+        "options_sent": { "$ref": "#/$defs/U64" },
+        "options_alive": { "$ref": "#/$defs/U64" },
+        "options_failed": { "$ref": "#/$defs/U64" },
+        "options_skipped": { "$ref": "#/$defs/U64" },
+        "interval": { "$ref": "#/$defs/U32", "description": "Effective CRLF round seconds, after the restrict_source 2 clamp." },
+        "ct_bound": { "$ref": "#/$defs/U32", "description": "The conntrack udp bound the round runs under, seconds." }
+      },
+      "required": ["crlf_sent", "crlf_skipped", "crlf_failed", "options_sent", "options_alive", "options_failed", "options_skipped", "interval", "ct_bound"],
+      "additionalProperties": false
+    },
+
+    "ResolvedEntry": {
+      "type": "object",
+      "description": "One resolved registrar target (account.c account_status_dump()).",
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["host", "port"],
+      "additionalProperties": false
+    },
+
+    "LingerEntry": {
+      "type": "object",
+      "description": "One dns_linger retention entry: a proxy endpoint a recent answer named and how many seconds ago it was last named (account.c account_status_dump()).",
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "$ref": "#/$defs/U32" },
+        "age": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["host", "port", "age"],
+      "additionalProperties": false
+    },
+
+    "AccountEntry": {
+      "type": "object",
+      "description": "One lines[] entry (account.c account_status_dump(), acct_conn_status_dump(), acct_sub_status_dump(), account_ka_dump()); emitted per active account. The registration block splits on reg init: a never-initialized registration reports the literal state resolving / status trying and none of expires, last_code, contact, targets, dns_answer. An absent expires beside an absent mwi_subscription marks the not-initialized case.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "aor": { "type": "string", "description": "sip:user@domain (account.c)." },
+        "resolve_host": { "type": "string", "description": "The next hop the resolver chases." },
+        "dns_lookup": { "$ref": "#/$defs/DnsLookupWord", "description": "The question this line asks for its next hop (account.c acct_dns_kind()); present from the build of the line, like family." },
+        "local_port": { "$ref": "#/$defs/U32" },
+        "family": { "type": "string", "enum": ["ipv4", "ipv6"], "description": "The address family of the line's socket, local host, Via, Contact and media (account.c account_status_dump())." },
+        "transport": { "$ref": "#/$defs/TransportWord" },
+        "listener": { "type": "boolean", "description": "tcp/tls only: whether the shared listener handle exists (acct_conn_status_dump())." },
+        "tls_error": { "type": "string", "description": "tls only, and only when a connection or client error string is non-empty (account.c account_conn_dump())." },
+        "connection": {
+          "type": "object",
+          "description": "tcp/tls only, when a stream connection exists (acct_conn_status_dump()).",
+          "properties": {
+            "state": { "$ref": "#/$defs/ConnStateWord" },
+            "peer": { "type": "string", "description": "host:port when sip_dst_host() resolves the peer." },
+            "queued": { "$ref": "#/$defs/U32" }
+          },
+          "required": ["state", "queued"],
+          "additionalProperties": false
+        },
+        "state": { "$ref": "#/$defs/RegStateWord" },
+        "status": { "$ref": "#/$defs/AcctStatusWord" },
+        "expires": { "$ref": "#/$defs/U32", "description": "Registration grant seconds; every initialized registration reports it." },
+        "last_code": { "$ref": "#/$defs/U32", "description": "Last SIP response code of the registration." },
+        "contact": { "type": "string", "description": "sip_reg_contact(); may be empty." },
+        "targets": { "$ref": "#/$defs/U32", "description": "Resolved registrar target count." },
+        "dns_answer": { "$ref": "#/$defs/DnsAnswerWord", "description": "Which answer built the targets the line holds (account.c account_status_dump())." },
+        "resolved": { "type": "array", "items": { "$ref": "#/$defs/ResolvedEntry" }, "description": "The full resolved target list; present iff the count is nonzero (the omit-empty rule)." },
+        "linger": { "type": "array", "items": { "$ref": "#/$defs/LingerEntry" }, "description": "The dns_linger retention; present iff it holds an entry." },
+        "refresh_in": { "$ref": "#/$defs/U32", "description": "Seconds to the next refresh; present iff one is scheduled." },
+        "registrar": { "type": "string", "description": "Current registrar host; paired with registrar_port." },
+        "registrar_port": { "$ref": "#/$defs/U32" },
+        "mwi_subscription": { "$ref": "#/$defs/SubStatusWord", "description": "Present iff the channel subscribes and the SUBSCRIBE machine initialized (acct_sub_status_dump())." },
+        "keepalive": { "$ref": "#/$defs/KeepaliveTable" }
+      },
+      "required": ["line", "aor", "resolve_host", "dns_lookup", "local_port", "family", "transport", "state", "status"],
+      "dependentRequired": {
+        "expires": ["last_code", "contact", "targets", "dns_answer"],
+        "registrar": ["registrar_port"],
+        "registrar_port": ["registrar"]
+      },
+      "additionalProperties": false
+    },
+
+    "CallLeg": {
+      "type": "object",
+      "description": "One call[].calls[] leg (proto/sip/call.c calls_status_dump()). slot is the physical name every media key describes; ui_slot is the name the FSM knows the leg by, differing only on a line a transfer moved.",
+      "properties": {
+        "slot": { "$ref": "#/$defs/U32" },
+        "ui_slot": { "$ref": "#/$defs/U32" },
+        "shadow": { "const": true, "description": "A leg that does not speak for its name (referral child before takeover, replaced leg after)." },
+        "state": { "$ref": "#/$defs/LegStateWord" },
+        "ui_busy": { "type": "boolean" },
+        "inbound": { "type": "boolean" },
+        "number": { "type": "string", "minLength": 1, "description": "Dialed or offered identity; an empty identity is absent, never an empty string." },
+        "remote": { "type": "string", "minLength": 1, "description": "Parsed remote identity, present even when withheld." },
+        "name": { "type": "string", "minLength": 1 },
+        "cid_private": { "const": true, "description": "The caller withheld the number; distinct from sending none." },
+        "codec": { "$ref": "#/$defs/SdpCodecWord", "description": "Committed session only; t38 for an image session." },
+        "ptime": { "$ref": "#/$defs/U32", "description": "Committed ptime ms; 0 on a T.38 session." },
+        "direction": { "$ref": "#/$defs/SdpDirectionWord" },
+        "srtp": { "$ref": "#/$defs/SrtpSuiteUpper", "description": "Committed suite name; never a key or its digest." },
+        "fax": { "enum": ["t38", "passthrough"], "description": "Mutually exclusive words; a committed T.38 session wins over passthrough. passthrough names the media policy of the leg and not its codec (call.c calls_status_dump()). It is written for a leg that carries the G.711 passthrough profile, and for one that carries a passthrough kind alone. The second leg is the calling side, whose kind came from an answer tone on the wire. The codec key beside this one may therefore name a compressed codec." },
+        "fax_kind": { "enum": ["modem", "fax"], "description": "What the leg's passthrough carries (call.c calls_status_dump(), hal_media.passthrough). modem comes from an answer tone on either feed, and fax from the first local V.21 preamble. The word names the canceller, buffer and detector policy of the leg, and implies no codec. Present only beside fax == passthrough." },
+        "rtp_port": { "$ref": "#/$defs/U32" },
+        "session_expires": { "$ref": "#/$defs/U32", "description": "Session timer interval; paired with we_refresh." },
+        "we_refresh": { "type": "boolean" }
+      },
+      "required": ["slot", "ui_slot", "state", "ui_busy", "inbound"],
+      "allOf": [
+        {
+          "if": { "properties": { "fax": { "const": "passthrough" } }, "required": ["fax"] },
+          "then": { "required": ["fax_kind"] },
+          "else": { "not": { "required": ["fax_kind"] } }
+        }
+      ],
+      "dependentRequired": {
+        "codec": ["ptime", "direction"],
+        "ptime": ["codec"],
+        "direction": ["codec"],
+        "srtp": ["codec"],
+        "session_expires": ["we_refresh"],
+        "we_refresh": ["session_expires"]
+      },
+      "additionalProperties": false
+    },
+
+    "CallLoopTest": {
+      "type": "object",
+      "description": "The loop test record of one port (line/line.c loop_test_dump()). mode is what this port plays, offhook where its handset is, ringing whether its bell runs, and audio whether the backend holds the loop armed.",
+      "properties": {
+        "mode": { "$ref": "#/$defs/LoopTestModeWord" },
+        "offhook": { "type": "boolean" },
+        "ringing": { "type": "boolean", "description": "Cleared by the ring end record of the backend (line/line.c line_hal_event()), so a bell that ran its window reads false without a hook edge." },
+        "audio": { "type": "boolean" }
+      },
+      "required": ["mode", "offhook", "ringing", "audio"],
+      "additionalProperties": false
+    },
+
+    "CallRefused": {
+      "type": "object",
+      "description": "What one line turned away (proto/sip/call.c refused_dump(), refused_note(), calls_refused_note()). A refusal in front of the leg, which is the two 480s and the 486 of account.c account_request_recv() and every admission rule of rx_new_invite(), opens no record, so these counts are its only trace. A rejection of a ringing leg, which is call_reject() and ring_refuse(), closes a failed record as well and is counted here too. A refusal whose server transaction is already gone answers nobody and counts nothing. The counts run from the daemon start: calls_init() clears them and a configuration reload leaves them alone.",
+      "properties": {
+        "busy": { "$ref": "#/$defs/U32", "description": "Every 486, 600 or 603 this line answered, whatever raised it: a busy subscriber, a slot table with no room, a Replaces that matched an early dialog, a line with no RTP port left (call.c refused_busy_is())." },
+        "unavailable": { "$ref": "#/$defs/U32", "description": "Refusals that answered 480 or 503, the line or the board taking no call for now (call.c refused_note())." },
+        "other": { "$ref": "#/$defs/U32", "description": "Every refusal code outside the two classes above, among them the 400 of a From with no tag, the 422 of a session interval below the floor, the 481 of a Replaces that matched no dialog, the 488 of an offer this side cannot answer and the 500 of a 180 that does not build (call.c refused_note())." },
+        "last_code": { "$ref": "#/$defs/U32", "description": "The SIP status code of the last refusal, whichever class it counted under (call.c refused_note())." },
+        "last_age_ms": { "$ref": "#/$defs/U32", "description": "Milliseconds since the last refusal, read on the transaction clock that stamped it (call.c refused_dump())." }
+      },
+      "required": ["busy", "unavailable", "other", "last_code", "last_age_ms"],
+      "additionalProperties": false
+    },
+
+    "CallEntry": {
+      "type": "object",
+      "description": "One call[] entry (line/line.c lines_status_dump()); the array is empty until the lines are up. The core writes line, oos, ringing, the mwi keys and the fault, ring, forward disconnect and loop test keys; the protocol in force writes the rest (proto/proto.h ops->status_dump_call), and the oneOf of StatusReply states which keys a running sip protocol requires. A feature key lands only while it describes something: an armed forward with no target is an empty string, presence and not the value carries the state.",
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "CLEARING" } }, "required": ["state"] },
+          "else": { "not": { "required": ["clearing"] } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "CONF" } }, "required": ["state"] },
+          "else": { "not": { "required": ["conf"] } }
+        },
+        {
+          "if": { "properties": { "oos": { "const": true } }, "required": ["oos"] },
+          "else": { "not": { "required": ["fault"] } }
+        },
+        {
+          "if": { "required": ["loop_test"] },
+          "then": { "properties": { "oos": { "const": true } }, "required": ["oos"] }
+        }
+      ],
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "state": {
+          "anyOf": [
+            { "$ref": "#/$defs/FsmStateWord" },
+            { "$ref": "#/$defs/MgcpStateWord" }
+          ],
+          "description": "The state word of the machine of the protocol in force; the oneOf of StatusReply holds each protocol to its own vocabulary."
+        },
+        "oos": { "type": "boolean" },
+        "fault": { "const": true, "description": "Present only while a SLIC fault holds the line out of service (line/line.c lines_status_dump()), so it rides beside oos true and nowhere else. A reload derives the config reasons again, and this one is not among them. Only the backend's clear record removes it, a fault code of 0." },
+        "ringing": { "type": "boolean" },
+        "ring_held": { "const": true, "description": "Present only while a line test holds the bell back (line/line.c lines_status_dump(), fsm_ring_held()): the one state where the line reads as ringing and the phone is quiet." },
+        "call_waiting": { "type": "boolean", "description": "Effective value (proto/sip/features.c feature_cw_effective())." },
+        "dnd": { "type": "boolean" },
+        "cf_uncond": { "type": "string", "description": "Present iff armed; may be empty for a config that arms without a target (proto/sip/line.c cf_dump())." },
+        "cf_busy": { "type": "string" },
+        "cf_no_answer": { "type": "string" },
+        "mwi": { "type": "boolean" },
+        "mwi_new": { "$ref": "#/$defs/U32" },
+        "mwi_old": { "$ref": "#/$defs/U32" },
+        "cid_once": { "type": "boolean", "description": "Present iff a per-call CID code armed; true means deliver." },
+        "cid_restrict": { "type": "boolean", "description": "Present iff a persistent CID override armed; true means withheld, the inverse polarity of cid_once." },
+        "clearing": { "$ref": "#/$defs/ClearingWord", "description": "CLEARING state only." },
+        "conf": { "const": true, "description": "CONF state only." },
+        "fwd_disc_reversed": { "const": true },
+        "fwd_disc_armed": { "const": true },
+        "fwd_disc_down": { "const": true },
+        "fax_switched": { "type": "array", "items": { "type": "boolean" }, "minItems": 2, "maxItems": 2, "description": "Per-slot latch; present iff any slot latched (proto/sip/line.c latch_dump())." },
+        "t38_switched": { "type": "array", "items": { "type": "boolean" }, "minItems": 2, "maxItems": 2 },
+        "digits": { "type": "string", "description": "Collected digits; present iff any." },
+        "deferred": { "$ref": "#/$defs/U32", "description": "Queued deferred events; present iff non-zero." },
+        "deferred_lost": { "$ref": "#/$defs/U32", "description": "Dropped deferred events; present iff non-zero." },
+        "loop_test": { "$ref": "#/$defs/CallLoopTest", "description": "Present only while the manufacturing loop test holds this port (line/line.c lines_status_dump(), loop_test_dump()). The mode takes every line out of service, so the table rides beside oos true and nowhere else." },
+        "calls": { "type": "array", "items": { "$ref": "#/$defs/CallLeg" }, "maxItems": 2 },
+        "refused": { "$ref": "#/$defs/CallRefused", "description": "Present only once this line refused a call (proto/sip/call.c calls_status_dump(), refused_dump()). Every count is zero until then and the whole table is absent, so the key itself says the line turned something away." }
+      },
+      "required": ["line", "oos", "ringing", "mwi", "mwi_new", "mwi_old"],
+      "additionalProperties": false
+    },
+
+    "StatusReply": {
+      "type": "object",
+      "description": "voice status (ubus.c voice_status()): the full daemon state. events and jb_events land only with a HAL attached (status.c status_hal_dump() early-returns without one); the streams, jb, lec and monitor diagnostic arrays are always present and empty where nothing answers, each swept through its own fast HAL op.",
+      "properties": {
+        "version": { "type": "string", "description": "UVOICE_VERSION (uvoice.h), a dotted triple." },
+        "config_generation": { "$ref": "#/$defs/U32", "description": "uv.config_generation (uvoice.h): 1 at the load, plus one for every voice reload that took (main.c uvoice_reload()); a failed reload leaves it. The call trace snapshots carry the same counter." },
+        "config": {
+          "type": "object",
+          "properties": {
+            "loaded": { "type": "boolean" },
+            "enabled": { "type": "boolean" },
+            "channels": { "$ref": "#/$defs/U32" }
+          },
+          "required": ["loaded", "enabled", "channels"],
+          "additionalProperties": false
+        },
+        "hal": {
+          "type": "object",
+          "description": "status.c status_hal_dump(); the capability half lands only with a HAL attached.",
+          "properties": {
+            "state": { "$ref": "#/$defs/HalStateWord" },
+            "backend": { "type": "string", "description": "hal_backend_ops.name: stub or udsp." },
+            "version": { "type": "string" },
+            "slic": { "type": "string" },
+            "lines": { "$ref": "#/$defs/U32" },
+            "streams_per_channel": { "$ref": "#/$defs/U32" },
+            "features": { "type": "array", "items": { "$ref": "#/$defs/HalFeatureWord" } },
+            "codecs": { "type": "array", "items": { "$ref": "#/$defs/HalCodecWord" } },
+            "op_errors": { "$ref": "#/$defs/U64" },
+            "tdm_stalls": { "$ref": "#/$defs/U64" },
+            "completions_lost": { "$ref": "#/$defs/U64" },
+            "holds": { "$ref": "#/$defs/U64", "description": "status.c status_hal_dump(), hal_counters.holds: catch-up episodes of the backend engine. One hold is one episode in which the engine found two or more capture periods waiting. 0 on a backend with no TDM engine of its own (stub)." },
+            "capture_drops": { "$ref": "#/$defs/U64", "description": "status.c status_hal_dump(), hal_counters.capture_drops: capture periods the ring overwrote before the engine read them. 0 on a backend with no TDM engine of its own." },
+            "trim_drops": { "$ref": "#/$defs/U64", "description": "status.c status_hal_dump(), hal_counters.trim_drops: capture periods the engine skipped to catch up after a hold. 0 on a backend with no TDM engine of its own." },
+            "playback_expired": { "$ref": "#/$defs/U64", "description": "status.c status_hal_dump(), hal_counters.playback_expired: playback periods the hardware pointer ran past before the engine wrote them. 0 on a backend with no TDM engine of its own." },
+            "hook_gaps": { "$ref": "#/$defs/U64", "description": "status.c status_hal_dump(), hal_counters.hook_gaps: hook samples the backend's SLIC thread took more than one tick after the previous one while it sampled per tick, on the wall clock. The hook machine measures a dial pulse between samples, so a late sample mismeasures the pulse. 0 on a backend with no SLIC thread of its own (stub)." },
+            "hook_moved_gaps": { "$ref": "#/$defs/U64", "description": "status.c status_hal_dump(), hal_counters.hook_moved_gaps: hook samples on which the line circuit recorded a hook change the level did not show, a lost pair of transitions inside one sample interval. 0 on a backend with no SLIC thread of its own." },
+            "hook_gap_max_ms": { "$ref": "#/$defs/U32", "description": "status.c status_hal_dump(), hal_counters.hook_gap_max_ms: the widest gap hook_gaps counted, in milliseconds of wall clock. 0 on a backend with no SLIC thread of its own." },
+            "rt": {
+              "type": "object",
+              "description": "status.c hal_rt_dump(): what the backend's real-time setup achieved, present only when the backend reported one (the udsp backend; the stub leaves it out). policy and net_policy are the tick and packet threads. prio is the SCHED_FIFO priority the config asked for, 0 when none. sched_errno is the refusal of that request, 0 when granted or not made; 1 (EPERM) is the RT_GROUP_SCHED cgroup gate. cpu is the pinned cpu, -1 unpinned. mlock is the lock the library took at open, which it takes only with a request; the daemon's own process lock is not reflected. The table names the engine of the open; a recovery that recreates the engine does not rewrite it.",
+              "properties": {
+                "policy": { "$ref": "#/$defs/RtPolicyWord" },
+                "prio": { "$ref": "#/$defs/U32" },
+                "cpu": { "$ref": "#/$defs/I32" },
+                "sched_errno": { "$ref": "#/$defs/U32" },
+                "mlock": { "type": "boolean" },
+                "net_policy": { "$ref": "#/$defs/RtPolicyWord" }
+              },
+              "required": ["policy", "prio", "cpu", "sched_errno", "mlock", "net_policy"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["state", "backend"],
+          "dependentRequired": {
+            "version": ["slic", "lines", "streams_per_channel", "features", "codecs", "op_errors", "tdm_stalls", "completions_lost", "holds", "capture_drops", "trim_drops", "playback_expired", "hook_gaps", "hook_moved_gaps", "hook_gap_max_ms"]
+          },
+          "additionalProperties": false
+        },
+        "region": {
+          "type": "object",
+          "description": "line/line.c lines_region_status_dump(): the region the daemon holds, always present. requested is the ISO3 directory the base region option resolved to (empty before the config applied), applied the one the backend acknowledged (empty until then, and after a failed load). source says where the values came from: backend is the read-back of hal_ops.region_get, default the compiled default line/line.c stands on before the first read-back and for the life of a backend with no getter. iso3 and describe are the read-back's own and both are empty on the default. pulse_invert is the decadic digit coding of the region: true when a dialed N arrives as 10 - N pulses (the [hook] pulse_invert key, New Zealand), false on the direct coding and on the default. confirm_total_ms is the whole length of the region confirm tone, and the dial tone behind a star code starts at its end; 0 means that no length is known, and the dial tone then keeps its usual deferral. confirm_endless is true when the confirm tone repeats until stopped, and no dial tone then follows it. The default carries 0 and false. ring lists only the templates the region defines; template is the 0-based index (the region file's [ring r<n+1>]).",
+          "properties": {
+            "requested": { "type": "string" },
+            "applied": { "type": "string" },
+            "source": { "enum": ["backend", "default"] },
+            "iso3": { "type": "string" },
+            "describe": { "type": "string" },
+            "cid_format": { "$ref": "#/$defs/HalCidFormatWord" },
+            "mwi_format": { "$ref": "#/$defs/HalCidFormatWord" },
+            "hook_flash_min_ms": { "$ref": "#/$defs/U32" },
+            "hook_flash_max_ms": { "$ref": "#/$defs/U32" },
+            "hook_release_min_ms": { "$ref": "#/$defs/U32" },
+            "cw_sas_total_ms": { "$ref": "#/$defs/U32" },
+            "flash_service": { "$ref": "#/$defs/FlashServiceWord" },
+            "pulse_invert": { "type": "boolean" },
+            "confirm_total_ms": { "$ref": "#/$defs/U32" },
+            "confirm_endless": { "type": "boolean" },
+            "ring": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "template": { "$ref": "#/$defs/U32" },
+                  "cadence": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "on_ms": { "$ref": "#/$defs/U32" },
+                        "off_ms": { "$ref": "#/$defs/U32" }
+                      },
+                      "required": ["on_ms", "off_ms"],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["template", "cadence"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["requested", "applied", "source", "iso3", "describe", "cid_format", "mwi_format", "hook_flash_min_ms", "hook_flash_max_ms", "hook_release_min_ms", "cw_sas_total_ms", "flash_service", "pulse_invert", "confirm_total_ms", "confirm_endless", "ring"],
+          "additionalProperties": false
+        },
+        "events": {
+          "type": "object",
+          "description": "HAL event counters; present iff a HAL is attached.",
+          "properties": {
+            "read": { "$ref": "#/$defs/U64" },
+            "sent": { "$ref": "#/$defs/U64" },
+            "dropped": { "$ref": "#/$defs/U64" },
+            "lost": { "$ref": "#/$defs/U64" }
+          },
+          "required": ["read", "sent", "dropped", "lost"],
+          "additionalProperties": false
+        },
+        "jb_events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/JbEventRow" },
+          "description": "The event cache; present iff a HAL is attached. It carried the jb key before the diagnostic arrays moved into this reply."
+        },
+        "media": {
+          "type": "object",
+          "description": "The call layer's own counters, outside the hal table because they survive a backend that never attached.",
+          "properties": { "opus_dtmf_fallbacks": { "$ref": "#/$defs/U32" } },
+          "required": ["opus_dtmf_fallbacks"],
+          "additionalProperties": false
+        },
+        "streams": { "type": "array", "items": { "$ref": "#/$defs/StatusStreamRow" }, "description": "Live media rows, empty until a stream runs (gated on the fast media op)." },
+        "jb": { "type": "array", "items": { "$ref": "#/$defs/StatusJbRow" }, "description": "Constant grid, one row per (line, stream) once the cap is published; empty only before that or with no HAL. Each row's sample word says whether its counters are live, kept from the last call, or never read." },
+        "lec": { "type": "array", "items": { "$ref": "#/$defs/StatusLecRow" }, "description": "Constant grid, one row per line once the cap is published; empty only before that or with no HAL. Each row carries the four layers config, applied, policy and state." },
+        "monitor": { "type": "array", "items": { "$ref": "#/$defs/StatusMonitorRow" }, "description": "Constant grid, one row per line once the cap is published; empty only before that or with no HAL. Each row carries the analog state of the line and its own sample word, which names the instant of every reading it has." },
+        "diag": { "$ref": "#/$defs/StatusDiagTable", "description": "The backend's own diagnostic counters (status.c status_diag_dump()), present only on a backend that carries the two getters. voice status renders every line." },
+        "signaling": { "$ref": "#/$defs/SignalingTable" },
+        "lines": {
+          "type": "array",
+          "description": "proto/proto.h ops->status_dump_lines; see oneOf."
+        },
+        "network": {
+          "type": "object",
+          "description": "net/iface.c net_iface_status_dump(); address is the IPv4 address of the voice interface, address6 the global IPv6 address of its netdev (any netifd interface on that netdev may report it), and l3_device the netdev itself. Each key is present only while its own value is known, and the whole table is omitted when none of the three is.",
+          "properties": {
+            "address": { "type": "string" },
+            "address6": { "type": "string" },
+            "l3_device": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "call": { "type": "array", "items": { "$ref": "#/$defs/CallEntry" } },
+        "mgcp": { "$ref": "#/$defs/MgcpTable", "description": "proto/proto.h ops->status_dump_top of the mgcp protocol; present iff mgcp runs (see oneOf)." }
+      },
+      "required": ["version", "config_generation", "config", "hal", "region", "media", "streams", "jb", "lec", "monitor", "signaling", "lines", "call"],
+      "dependentRequired": {
+        "events": ["jb_events"],
+        "jb_events": ["events"]
+      },
+      "oneOf": [
+        {
+          "description": "A running sip protocol (sip_line_status_dump()).",
+          "properties": {
+            "signaling": {
+              "properties": {
+                "protocol": { "const": "sip" },
+                "state": { "const": "running" }
+              }
+            },
+            "lines": { "items": { "$ref": "#/$defs/AccountEntry" } },
+            "call": {
+              "items": {
+                "properties": { "state": { "$ref": "#/$defs/FsmStateWord" } },
+                "required": ["state", "call_waiting", "dnd", "calls"]
+              }
+            }
+          },
+          "not": { "required": ["mgcp"] }
+        },
+        {
+          "description": "A running mgcp protocol (proto/mgcp/proto.c mgcp_status_dump_lines(), mgcp_status_dump_call(), mgcp_status_dump_top()): endpoint rows, the state word of each endpoint beside the core call keys, and the mgcp table.",
+          "properties": {
+            "signaling": {
+              "properties": {
+                "protocol": { "const": "mgcp" },
+                "state": { "const": "running" }
+              }
+            },
+            "lines": { "items": { "$ref": "#/$defs/MgcpLineEntry" } },
+            "call": {
+              "items": {
+                "properties": { "state": { "$ref": "#/$defs/MgcpStateWord" } },
+                "required": ["state"],
+                "propertyNames": {
+                  "enum": ["line", "state", "oos", "fault", "ringing",
+                           "ring_held", "mwi", "mwi_new", "mwi_old",
+                           "fwd_disc_reversed", "fwd_disc_down", "loop_test"]
+                }
+              }
+            }
+          },
+          "required": ["mgcp"]
+        },
+        {
+          "description": "The null table: core call keys alone.",
+          "properties": {
+            "signaling": {
+              "properties": { "state": { "const": "unavailable" } }
+            },
+            "lines": { "maxItems": 0 },
+            "call": {
+              "items": {
+                "propertyNames": {
+                  "enum": ["line", "oos", "fault", "ringing", "ring_held",
+                           "mwi", "mwi_new", "mwi_old", "fwd_disc_reversed",
+                           "fwd_disc_down", "loop_test"]
+                }
+              }
+            }
+          },
+          "not": { "required": ["mgcp"] }
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "CdrRecord": {
+      "type": "object",
+      "description": "One call record (cdr.c entry_dump()); the ring keeps 64, seq never resets. start is wall-clock epoch seconds; duration_ms and answer_offset_ms are milliseconds.",
+      "allOf": [
+        {
+          "if": { "properties": { "answered": { "const": true } }, "required": ["answered"] },
+          "then": { "required": ["answer_offset_ms"] },
+          "else": { "not": { "required": ["answer_offset_ms"] } }
+        },
+        {
+          "if": { "properties": { "media_state": { "const": "present" } }, "required": ["media_state"] },
+          "then": { "required": ["media"] },
+          "else": { "not": { "required": ["media"] } }
+        }
+      ],
+      "properties": {
+        "seq": { "$ref": "#/$defs/U32" },
+        "line": { "$ref": "#/$defs/U32" },
+        "slot": { "$ref": "#/$defs/U32" },
+        "inbound": { "type": "boolean" },
+        "answered": { "type": "boolean" },
+        "fail": { "$ref": "#/$defs/FailWord", "description": "Present iff the call failed." },
+        "number": { "type": "string", "minLength": 1 },
+        "remote": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "start": { "$ref": "#/$defs/U64" },
+        "duration_ms": { "$ref": "#/$defs/U32" },
+        "answer_offset_ms": { "$ref": "#/$defs/U32" },
+        "codec": { "$ref": "#/$defs/SdpCodecWord", "description": "Absent when no media was negotiated; paired with ptime." },
+        "ptime": { "$ref": "#/$defs/U32" },
+        "rtp_port": { "$ref": "#/$defs/U32" },
+        "transferred": { "const": true, "description": "A transfer ended the leg." },
+        "transferred_from": { "$ref": "#/$defs/U32", "description": "The seq of the record this leg took the call over from." },
+        "conferenced": { "const": true, "description": "The mixer joined the leg." },
+        "media_state": { "$ref": "#/$defs/MediaStateWord" },
+        "media": { "$ref": "#/$defs/MediaTable" },
+        "jb": {
+          "description": "Present iff a jb snapshot landed; the counters of cdr_jb_dump() wrapped by entry_dump().",
+          "allOf": [{ "$ref": "#/$defs/JbCounters" }],
+          "unevaluatedProperties": false
+        },
+        "in_progress": { "const": true, "description": "The call is still running; the record is open." }
+      },
+      "required": ["seq", "line", "slot", "inbound", "answered", "start", "duration_ms", "media_state"],
+      "dependentRequired": {
+        "codec": ["ptime"],
+        "ptime": ["codec"]
+      },
+      "additionalProperties": false
+    },
+
+    "CdrReply": {
+      "type": "object",
+      "properties": {
+        "cdr": { "type": "array", "items": { "$ref": "#/$defs/CdrRecord" }, "maxItems": 64, "description": "cdr.c cdr_dump(); oldest first." }
+      },
+      "required": ["cdr"],
+      "additionalProperties": false
+    },
+
+    "StatsRow": {
+      "type": "object",
+      "description": "cdr.c cdr_stats_dump(); one row per compiled channel slot, zeros for an unconfigured line. The totals move only at call teardown.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "in_received": { "$ref": "#/$defs/U32" },
+        "in_answered": { "$ref": "#/$defs/U32" },
+        "in_failed": { "$ref": "#/$defs/U32" },
+        "out_attempted": { "$ref": "#/$defs/U32" },
+        "out_answered": { "$ref": "#/$defs/U32" },
+        "out_failed": { "$ref": "#/$defs/U32" },
+        "totals": {
+          "type": "object",
+          "properties": {
+            "packets_sent": { "$ref": "#/$defs/U64" },
+            "packets_recv": { "$ref": "#/$defs/U64" },
+            "packets_lost": { "$ref": "#/$defs/U64" },
+            "bytes_sent": { "$ref": "#/$defs/U64" },
+            "bytes_recv": { "$ref": "#/$defs/U64" }
+          },
+          "required": ["packets_sent", "packets_recv", "packets_lost", "bytes_sent", "bytes_recv"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["line", "in_received", "in_answered", "in_failed", "out_attempted", "out_answered", "out_failed", "totals"],
+      "additionalProperties": false
+    },
+
+    "StatsReply": {
+      "type": "object",
+      "properties": {
+        "stats": { "type": "array", "items": { "$ref": "#/$defs/StatsRow" }, "maxItems": 2, "description": "Every slot, or one row when the line argument filtered." }
+      },
+      "required": ["stats"],
+      "additionalProperties": false
+    },
+
+    "StatsResetReply": {
+      "type": "object",
+      "description": "cdr.c cdr_stats_reset(); a fixed answer saying what it cleared and what it kept.",
+      "properties": {
+        "reset": { "const": ["counters", "totals"] },
+        "ring_kept": { "const": true }
+      },
+      "required": ["reset", "ring_kept"],
+      "additionalProperties": false
+    },
+
+    "ReloadReply": {
+      "type": "object",
+      "description": "ubus.c voice_reload(); the body lands regardless of the reload outcome, the ubus status code carries success.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "channels": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["enabled", "channels"],
+      "additionalProperties": false
+    },
+
+    "StatsLiveReply": {
+      "type": "object",
+      "description": "The deferred success body of voice stats_live (ubus.c stats_live_done()); every refusal is a bare ubus status code. slot is the UI slot of the request.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "slot": { "$ref": "#/$defs/U32" },
+        "media": { "$ref": "#/$defs/MediaTable" }
+      },
+      "required": ["line", "slot", "media"],
+      "additionalProperties": false
+    },
+
+    "StatsLiveArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "slot": { "$ref": "#/$defs/U32", "description": "The UI slot, not the physical stream (line/line.c line_stats_live_query())." }
+      },
+      "required": ["line", "slot"],
+      "additionalProperties": false
+    },
+
+    "LineTestArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "test": { "$ref": "#/$defs/LineTestWord" }
+      },
+      "required": ["line", "test"],
+      "additionalProperties": false
+    },
+
+    "LoopTestArgs": {
+      "type": "object",
+      "description": "voice loop_test (ubus.c voice_loop_test()). enable is the only required key; a policy carries no defaults, so the handler applies 60 s and 500 ms for the two absent numbers and bounds both before the shell sees them.",
+      "properties": {
+        "enable": { "type": "boolean" },
+        "mode": { "$ref": "#/$defs/LoopTestModeWord", "description": "self is the loop a line plays to itself, cross the connection between the two ports; a one-port board runs self whichever word arrives (line/line.c loop_test_mode_of())." },
+        "ring_s": { "$ref": "#/$defs/U32", "description": "The ring window in seconds, 1 to 60 (line/line.h LINE_LOOP_TEST_RING_S_MAX); the backend ends each bell on it." },
+        "delay_ms": { "$ref": "#/$defs/U32", "description": "The playout delay of the self loop in milliseconds, 0 to 1000 (line/line.h LINE_LOOP_TEST_DELAY_MAX_MS); 0 asks for the shortest delay the backend carries." }
+      },
+      "required": ["enable"],
+      "additionalProperties": false
+    },
+
+    "LoopTestReply": {
+      "type": "object",
+      "description": "The standing mode (ubus.c voice_loop_test(), line/line.c loop_test_view_fill()). Every key is present whatever the call changed, so a caller reads what the board is doing; mode is off and the three numbers are 0 while no mode runs.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": { "enum": ["off", "self", "cross"], "description": "ubus.c loop_test_mode_name()." },
+        "lines": { "$ref": "#/$defs/U32", "description": "The ports the mode holds (line/line.c loop_test_line_count())." },
+        "ring_s": { "$ref": "#/$defs/U32" },
+        "delay_ms": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["enabled", "mode", "lines", "ring_s", "delay_ms"],
+      "additionalProperties": false
+    },
+
+    "OhmsReading": {
+      "description": "A resistance reading; the string open when the raw value saturates at UINT32_MAX (ubus.c MLT_OHMS_OPEN).",
+      "oneOf": [
+        { "$ref": "#/$defs/U32" },
+        { "const": "open" }
+      ]
+    },
+
+    "LineTestReply": {
+      "type": "object",
+      "description": "The deferred body of voice line_test (ubus.c line_test_request_done()); the record decodes mlt_record.h v1 (line_test_record_dump()), and every measurement key is gated on its valid bit, so a field the plug-in did not measure is absent.",
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "malformed" } }, "required": ["status"] },
+          "then": { "required": ["length"] },
+          "else": { "not": { "required": ["length"] } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "failed" } }, "required": ["status"] },
+          "then": { "required": ["code"] },
+          "else": { "not": { "required": ["code"] } }
+        }
+      ],
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "test": { "$ref": "#/$defs/LineTestWord" },
+        "status": { "enum": ["malformed", "failed", "complete"] },
+        "length": { "$ref": "#/$defs/U32", "description": "Raw record length of a malformed result." },
+        "code": { "$ref": "#/$defs/U32", "description": "The MLT status byte of a failed result, duplicated from record.code." },
+        "record": {
+          "type": "object",
+          "properties": {
+            "version": { "$ref": "#/$defs/U32" },
+            "test_id": { "$ref": "#/$defs/U32", "description": "0 gr909, 1 roh, 2 capacitance, 3 loop (hal.h hal_line_test)." },
+            "code": { "$ref": "#/$defs/U32" },
+            "valid": { "$ref": "#/$defs/U32", "description": "The raw valid-bit mask (ubus.c MLT_VALID_*)." },
+            "vdc_tr_mv": { "$ref": "#/$defs/U32", "description": "gr909; signed mV cast to u32." },
+            "vdc_tg_mv": { "$ref": "#/$defs/U32" },
+            "vdc_rg_mv": { "$ref": "#/$defs/U32" },
+            "vac_tr_mvrms": { "$ref": "#/$defs/U32" },
+            "vac_tg_mvrms": { "$ref": "#/$defs/U32" },
+            "vac_rg_mvrms": { "$ref": "#/$defs/U32" },
+            "r_tr_ohm": { "$ref": "#/$defs/OhmsReading", "description": "gr909 and loop." },
+            "r_tg_ohm": { "$ref": "#/$defs/OhmsReading" },
+            "r_rg_ohm": { "$ref": "#/$defs/OhmsReading" },
+            "roh_offhook": { "type": "boolean", "description": "gr909 and roh." },
+            "roh_res_fault": { "type": "boolean" },
+            "ren_milli": { "$ref": "#/$defs/U32", "description": "gr909; ringer equivalence x 1000." },
+            "c_tr_nf": { "$ref": "#/$defs/U32", "description": "capacitance." },
+            "c_tg_nf": { "$ref": "#/$defs/U32" },
+            "c_rg_nf": { "$ref": "#/$defs/U32" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["line", "test", "record", "status"],
+      "additionalProperties": false
+    },
+
+    "AccountCmdReply": {
+      "type": "object",
+      "description": "ubus.c uvoice_ubus_request_reply(): the account command verbs answer the line and what was asked for; the outcome is what voice status reports. The two verbs are rows of the SIP table (proto/sip/proto.c sip_ubus_rows[]), so the voice object carries them only while signaling.protocol is sip and runs.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "requested": { "enum": ["register", "unregister"] }
+      },
+      "required": ["line", "requested"],
+      "additionalProperties": false
+    },
+
+    "InjectReply": {
+      "type": "object",
+      "description": "ubus.c inject_reply_open(): the inject verbs answer what they injected; dial adds the digit event count (the seize is not counted).",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "injected": { "enum": ["seize", "release", "dial"] },
+        "digits": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["line", "injected"],
+      "additionalProperties": false
+    },
+
+    "DialArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "number": { "type": "string", "description": "1 to 32 characters from 0-9, * and # (line/line.c)." }
+      },
+      "required": ["line", "number"],
+      "additionalProperties": false
+    },
+
+    "TraceTable": {
+      "type": "object",
+      "description": "trace.c domain_names[]; ubus.c trace_state_dump() emits every domain, get and set answer the same shape. A value is the OR of the uci mask and the runtime mask.",
+      "properties": {
+        "sip": { "type": "boolean" },
+        "fsm": { "type": "boolean" },
+        "hook": { "type": "boolean" },
+        "hal": { "type": "boolean" },
+        "dialplan": { "type": "boolean" },
+        "media": { "type": "boolean" },
+        "jb": { "type": "boolean" },
+        "mgcp": { "type": "boolean" }
+      },
+      "required": ["sip", "fsm", "hook", "hal", "dialplan", "media", "jb", "mgcp"],
+      "additionalProperties": false
+    },
+
+    "TraceSetArgs": {
+      "type": "object",
+      "description": "ubus.c trace_policy: any subset of the domain booleans as top-level keys; an absent domain is left untouched.",
+      "properties": {
+        "sip": { "type": "boolean" },
+        "fsm": { "type": "boolean" },
+        "hook": { "type": "boolean" },
+        "hal": { "type": "boolean" },
+        "dialplan": { "type": "boolean" },
+        "media": { "type": "boolean" },
+        "jb": { "type": "boolean" },
+        "mgcp": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+
+    "CalltraceStateWord": {
+      "type": "string",
+      "enum": ["idle", "armed", "running", "finishing", "done", "failed"],
+      "description": "calltrace.c ct_state_name(). idle is no trace, armed is a capture waiting for its call, running is the window, finishing is the archive being packed, done and failed are terminal."
+    },
+    "CalltraceWaitingWord": {
+      "type": "string",
+      "enum": ["line_idle", "call"],
+      "description": "calltrace.c calltrace_status_dump(). line_idle means the line was off hook at the arm and the window waits for its next rest; call means the window waits for the next seize."
+    },
+    "CalltraceReasonWord": {
+      "type": "string",
+      "enum": ["call_ended", "timeout", "cancelled", "arm_expired", "line_restart", "daemon_stop", "export_failed", "finisher_failed"],
+      "description": "calltrace.c: the terminal word of a trace. call_ended is the stop edge plus the grace, timeout the window bound, cancelled an operator cancel, arm_expired an arm nobody used, line_restart a line forced out of service, daemon_stop a stop the daemon took, export_failed a ring export that could not write, finisher_failed a finisher that did not exit 0."
+    },
+    "CalltraceOptions": {
+      "type": "object",
+      "description": "calltrace.c ct_options_dump(): the options the running trace holds, after ubus.c calltrace_options_take() filled a default for every argument nobody named.",
+      "properties": {
+        "timeout_s": { "$ref": "#/$defs/U32", "description": "The window bound, default 300, at most 1800." },
+        "grace_s": { "$ref": "#/$defs/U32", "description": "How long a rested line may seize again inside the same window, default 5, at most 30." },
+        "arm_timeout_s": { "$ref": "#/$defs/U32", "maximum": 86400, "description": "How long the arm waits for its call, default 3600, at most 86400. One day bounds every timer of this surface inside an int of milliseconds." },
+        "wire": { "type": "boolean", "description": "Whether a tcpdump child runs, default true." },
+        "wire_max_mb": { "$ref": "#/$defs/U32", "description": "The cap of wire.pcap, default 32; 0 is refused." },
+        "rings_max_mb": { "$ref": "#/$defs/U32", "description": "The cap of rings.pcapng without the canceller ring, default 64; 0 is refused. At the cap the media ring stops." },
+        "lec": { "type": "boolean", "description": "Whether the canceller ring captures every frame of every line canceller while the window runs, default false. The capture holds the microphone before the canceller of every line in a call, and contains[] of the manifest names lec_audio." },
+        "lec_max_mb": { "$ref": "#/$defs/U32", "description": "The cap of the canceller ring in rings.pcapng, default 32; 0 is refused. At the cap the canceller ring stops alone. The arm space check counts it only with lec." }
+      },
+      "required": ["timeout_s", "grace_s", "arm_timeout_s", "wire", "wire_max_mb", "rings_max_mb", "lec", "lec_max_mb"],
+      "additionalProperties": false
+    },
+    "CalltraceWire": {
+      "type": "object",
+      "description": "calltrace.c ct_wire_status_dump(): the state of the tcpdump child. exit is present once the child was reaped.",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Whether this trace asked for a wire capture and started one." },
+        "ready": { "type": "boolean", "description": "ct_wire_ready_cb(): wire.pcap reached its 24-byte file header, so tcpdump opened the interface." },
+        "running": { "type": "boolean", "description": "Whether the child is still alive." },
+        "bytes": { "$ref": "#/$defs/U64", "description": "The size of wire.pcap at the last one-second poll." },
+        "truncated": { "type": "boolean", "description": "The capture reached wire_max_mb while the window ran and was stopped there." },
+        "restarts": { "$ref": "#/$defs/U32", "description": "How often the capture reached the cap while the trace only waited and was started again, each restart a gap." },
+        "exit": { "$ref": "#/$defs/I32", "description": "The child's exit status, or -1 when a signal ended it." }
+      },
+      "required": ["enabled", "ready", "running", "bytes", "truncated", "restarts"],
+      "additionalProperties": false
+    },
+    "CalltraceRingCounts": {
+      "type": "object",
+      "description": "trace_ring.c trace_ring_counts(): what happened to one ring. overwritten counts the entries a producer lost before an export reached them.",
+      "properties": {
+        "written": { "$ref": "#/$defs/U64" },
+        "exported": { "$ref": "#/$defs/U64" },
+        "overwritten": { "$ref": "#/$defs/U64" },
+        "truncated": { "$ref": "#/$defs/U64" }
+      },
+      "required": ["written", "exported", "overwritten", "truncated"],
+      "additionalProperties": false
+    },
+    "CalltraceRings": {
+      "type": "object",
+      "description": "calltrace.c ct_rings_status_dump(). registered says whether udebugd knows the rings, which only decides whether a live reader can see them: the export reads the daemon's own memory either way. The signaling ring carries the name of the protocol that runs, sip or mgcp, and sip under the null table (calltrace.c ct_ring_name()).",
+      "properties": {
+        "open": { "type": "boolean" },
+        "registered": { "type": "boolean" },
+        "log": { "$ref": "#/$defs/CalltraceRingCounts" },
+        "sip": { "$ref": "#/$defs/CalltraceRingCounts" },
+        "mgcp": { "$ref": "#/$defs/CalltraceRingCounts" },
+        "status": { "$ref": "#/$defs/CalltraceRingCounts" },
+        "rtp": { "$ref": "#/$defs/CalltraceRingCounts" },
+        "lec": { "$ref": "#/$defs/CalltraceRingCounts", "description": "The canceller ring. It opens only with the lec option, and its counts read 0 without it. A stop at lec_max_mb shows as truncated at the close and as a note of the manifest." },
+        "relay_dropped": { "$ref": "#/$defs/U64", "description": "trace_relay_dropped(): lines a backend thread could not hand over because the relay was full." },
+        "file_bytes": { "$ref": "#/$defs/U64", "description": "The size rings.pcapng has reached." },
+        "truncated": { "type": "boolean", "description": "The media ring stopped at rings_max_mb." }
+      },
+      "required": ["open", "registered", "log", "status", "rtp", "lec", "relay_dropped", "file_bytes", "truncated"],
+      "oneOf": [
+        { "required": ["sip"], "not": { "required": ["mgcp"] } },
+        { "required": ["mgcp"], "not": { "required": ["sip"] } }
+      ],
+      "additionalProperties": false
+    },
+    "CalltraceStatus": {
+      "type": "object",
+      "description": "calltrace.c calltrace_status_dump(), the reply of all three voice.calltrace methods. state is the only unconditional key. last_error can stand in any state and is required in failed; failure is required in failed and stands nowhere else; finish_budget_ms can stand in finishing alone; every other key carries the gate below. A key the controller cannot answer is absent, never null.",
+      "properties": {
+        "state": { "$ref": "#/$defs/CalltraceStateWord" },
+        "id": { "type": "string", "description": "<YYYYmmdd-HHMMSS>-line<N>-<4 hex from the boot id and the pid>, ct_id_make()." },
+        "line": { "$ref": "#/$defs/U32", "description": "The 0-based FXS line the trace is armed on." },
+        "options": { "$ref": "#/$defs/CalltraceOptions" },
+        "waiting_for": { "$ref": "#/$defs/CalltraceWaitingWord" },
+        "armed_at": { "$ref": "#/$defs/U64", "description": "Wall seconds of the arm." },
+        "capture_ready_at": { "$ref": "#/$defs/U64", "description": "Wall seconds at which tcpdump's file header appeared." },
+        "started_at": { "$ref": "#/$defs/U64", "description": "Wall seconds of the first move of the line out of FSM_IDLE." },
+        "ended_at": { "$ref": "#/$defs/U64", "description": "Wall seconds of the freeze." },
+        "elapsed_ms": { "$ref": "#/$defs/U64", "description": "Monotonic milliseconds since started_at." },
+        "calls": { "$ref": "#/$defs/U32", "description": "How often the line left FSM_IDLE inside the window, the start edge included." },
+        "snapshots": { "$ref": "#/$defs/U32", "description": "How many snapshots snapshots.jsonl holds." },
+        "wire": { "$ref": "#/$defs/CalltraceWire" },
+        "rings": { "$ref": "#/$defs/CalltraceRings" },
+        "workdir": { "type": "string", "description": "/tmp/uvoice/calltrace/<id>/, present while the dir exists; the finisher removes it once the archive is published." },
+        "archive": { "type": "string", "description": "/tmp/uvoice/calltrace/<id>.tar.gz, present once the finisher published it." },
+        "reason": { "$ref": "#/$defs/CalltraceReasonWord" },
+        "last_error": { "type": "string", "description": "The word of the last refused arm (busy, bad_line, bad_range, no_udebug, rings, no_tcpdump, no_taskset, no_space, workdir), \"wire\" when the arm stands but the wire capture did not start (ct_capture_start()), the file and errno text of a failed export, or \"exit <code>\" of a failed finisher. It stands until the next arm clears it. A refused arm over a failed trace writes its word here, and failure keeps the text of the failure." },
+        "failure": { "type": "string", "description": "What failed the trace: the file and errno text of a failed export (ct_fail()) or \"exit <code>\" of a failed finisher (ct_finish_done()). last_error takes the same text at the failure. A refused arm does not move it; the next arm that passes its preflight clears it (ct_trace_clear())." },
+        "finish_budget_ms": { "$ref": "#/$defs/U32", "description": "The milliseconds the live finisher may run before the controller stops it: ct_finish_budget_ms() at ct_finish_start(), the base plus the term per MiB of the work dir. Present in finishing once the finisher started, so a caller that waits for the archive waits as long as the daemon does; ct_trace_clear() clears it." }
+      },
+      "required": ["state"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "idle" } }, "required": ["state"] },
+          "then": {
+            "description": "An idle reply names no trace: ct_idle_reset() clears the id, the line, the options, every instant, the work dir and the two tables, and keeps the reason of the trace that just ended.",
+            "not": { "anyOf": [
+              { "required": ["id"] },
+              { "required": ["line"] },
+              { "required": ["options"] },
+              { "required": ["wire"] },
+              { "required": ["rings"] },
+              { "required": ["archive"] },
+              { "required": ["workdir"] },
+              { "required": ["armed_at"] },
+              { "required": ["capture_ready_at"] },
+              { "required": ["started_at"] },
+              { "required": ["ended_at"] },
+              { "required": ["elapsed_ms"] },
+              { "required": ["calls"] },
+              { "required": ["snapshots"] }
+            ] }
+          },
+          "else": {
+            "description": "Every other state names the trace it is running: the id, the line, the options and the two live tables stand.",
+            "required": ["id", "line", "options", "wire", "rings"]
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "armed" } }, "required": ["state"] },
+          "then": {
+            "description": "An armed trace says what it waits for and has reached no window yet.",
+            "required": ["waiting_for", "armed_at", "workdir"],
+            "not": { "anyOf": [
+              { "required": ["started_at"] },
+              { "required": ["ended_at"] },
+              { "required": ["elapsed_ms"] },
+              { "required": ["calls"] },
+              { "required": ["snapshots"] },
+              { "required": ["archive"] },
+              { "required": ["reason"] }
+            ] }
+          },
+          "else": { "not": { "required": ["waiting_for"] } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "running" } }, "required": ["state"] },
+          "then": {
+            "description": "A running window carries its start, its elapsed time and its two counts, and has no end yet.",
+            "required": ["armed_at", "started_at", "elapsed_ms", "calls", "snapshots", "workdir"],
+            "not": { "anyOf": [
+              { "required": ["ended_at"] },
+              { "required": ["archive"] },
+              { "required": ["reason"] }
+            ] }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "finishing" } }, "required": ["state"] },
+          "then": {
+            "description": "The freeze has run and the finisher is packing the dir; the terminal reason follows the finisher's own outcome. finish_budget_ms stands once the finisher started, and not while the wire capture is still being reaped.",
+            "required": ["armed_at", "started_at", "ended_at", "elapsed_ms", "calls", "snapshots", "workdir"],
+            "not": { "anyOf": [
+              { "required": ["archive"] },
+              { "required": ["reason"] }
+            ] }
+          },
+          "else": { "not": { "required": ["finish_budget_ms"] } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "done" } }, "required": ["state"] },
+          "then": {
+            "description": "A published archive. Only a window that opened reaches it, so started_at stands; elapsed_ms stops with the window.",
+            "required": ["armed_at", "started_at", "ended_at", "reason", "archive", "calls", "snapshots"],
+            "not": { "required": ["elapsed_ms"] }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "failed" } }, "required": ["state"] },
+          "then": {
+            "description": "The work dir stays on a failure until the next arm that passes its preflight removes it, so the evidence outlives the failure. failure names what went wrong, and last_error names it too until a refused arm writes its word there.",
+            "required": ["armed_at", "reason", "last_error", "failure", "workdir"],
+            "not": { "anyOf": [
+              { "required": ["archive"] },
+              { "required": ["elapsed_ms"] }
+            ] }
+          },
+          "else": { "not": { "required": ["failure"] } }
+        }
+      ]
+    },
+    "CalltraceArmArgs": {
+      "type": "object",
+      "description": "ubus.c calltrace_policy. line is required; every other argument takes the shipped default of calltrace.h when it is absent.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32", "description": "The 0-based FXS line. At or past CFG_CHANNEL_MAX answers Invalid argument." },
+        "timeout": { "$ref": "#/$defs/U32", "description": "Window seconds, default 300, at most 1800." },
+        "grace": { "$ref": "#/$defs/U32", "description": "Grace seconds, default 5, at most 30." },
+        "arm_timeout": { "$ref": "#/$defs/U32", "maximum": 86400, "description": "Arm seconds, default 3600, at most 86400; beyond it the arm answers Invalid argument with last_error bad_range." },
+        "wire": { "type": "boolean", "description": "Whether to run tcpdump, default true." },
+        "wire_max_mb": { "$ref": "#/$defs/U32", "description": "The wire cap, default 32; an explicit 0 answers Invalid argument." },
+        "rings_max_mb": { "$ref": "#/$defs/U32", "description": "The ring export cap, default 64; an explicit 0 answers Invalid argument." },
+        "lec": { "type": "boolean", "description": "Whether to capture the canceller frames of every line in a call, default false." },
+        "lec_max_mb": { "$ref": "#/$defs/U32", "description": "The canceller ring cap, default 32; an explicit 0 answers Invalid argument." }
+      },
+      "required": ["line"],
+      "additionalProperties": false
+    },
+
+    "HalConfigTable": {
+      "type": "object",
+      "description": "uci.c hal_dump(); every key unconditional.",
+      "properties": {
+        "tdm_backend": { "type": "string" },
+        "tdm_playback": { "type": "string" },
+        "tdm_capture": { "type": "string" },
+        "slic_plugin": { "type": "string" },
+        "fax_plugin": { "type": "string" },
+        "spidev": { "type": "string" },
+        "gpio_reset": { "type": "string" },
+        "gpio_interrupt": { "type": "string" },
+        "populated_ports_cfg": { "$ref": "#/$defs/U32" },
+        "populated_ports": { "$ref": "#/$defs/U32" },
+        "channels": { "$ref": "#/$defs/U32" },
+        "prefill_periods": { "$ref": "#/$defs/U32" },
+        "engine_cpu": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32." },
+        "engine_prio": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32." },
+        "pcm_offset_bits": { "$ref": "#/$defs/U32" },
+        "sample_rate": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["tdm_backend", "tdm_playback", "tdm_capture", "slic_plugin", "fax_plugin", "spidev", "gpio_reset", "gpio_interrupt", "populated_ports_cfg", "populated_ports", "channels", "prefill_periods", "engine_cpu", "engine_prio", "pcm_offset_bits", "sample_rate"],
+      "additionalProperties": false
+    },
+
+    "MgcpConfigTable": {
+      "type": "object",
+      "description": "uci.c cfg_dump() over mgcp_fields; every key unconditional. The voip.mgcp section, or the schema defaults when the section is absent (mgcp_parse()).",
+      "properties": {
+        "call_agent": { "type": "string" },
+        "call_agent_port": { "$ref": "#/$defs/U32" },
+        "local_port": { "$ref": "#/$defs/U32" },
+        "domain": { "type": "string" },
+        "bracketed_ip": { "type": "boolean" },
+        "endpoint_pattern": { "type": "string" },
+        "line_base": { "$ref": "#/$defs/U32" },
+        "dialect": { "enum": ["rfc3435", "ncs"], "description": "cfg/schema.h cfg_mgcp_dialect_vals; the loader replaces an unknown word with the default." },
+        "max1": { "$ref": "#/$defs/U32" },
+        "max2": { "$ref": "#/$defs/U32" },
+        "rto_init_ms": { "$ref": "#/$defs/U32" },
+        "rto_max_ms": { "$ref": "#/$defs/U32" },
+        "t_max_s": { "$ref": "#/$defs/U32" },
+        "t_hist_s": { "$ref": "#/$defs/U32" },
+        "persistent_events": { "type": "string", "description": "The event list. The uci word none dumps as the empty string (uci.c opt_str_checked())." },
+        "quarantine_default": { "enum": ["step", "loop"], "description": "cfg/schema.h cfg_mgcp_quarantine_vals." },
+        "send_ptime": { "type": "boolean" },
+        "reply_method": { "enum": ["source", "mgc_port"], "description": "cfg/schema.h cfg_mgcp_reply_vals." },
+        "signaling_dscp": { "$ref": "#/$defs/U32" },
+        "restart_delay_max_s": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["call_agent", "call_agent_port", "local_port", "domain", "bracketed_ip", "endpoint_pattern", "line_base", "dialect", "max1", "max2", "rto_init_ms", "rto_max_ms", "t_max_s", "t_hist_s", "persistent_events", "quarantine_default", "send_ptime", "reply_method", "signaling_dscp", "restart_delay_max_s"],
+      "additionalProperties": false
+    },
+
+    "ChannelTimersTable": {
+      "type": "object",
+      "description": "uci.c channel_timers_dump(); the thirteen SIP timers, all milliseconds.",
+      "properties": {
+        "t1": { "$ref": "#/$defs/U32" }, "t2": { "$ref": "#/$defs/U32" }, "t4": { "$ref": "#/$defs/U32" },
+        "a": { "$ref": "#/$defs/U32" }, "b": { "$ref": "#/$defs/U32" }, "d": { "$ref": "#/$defs/U32" },
+        "e": { "$ref": "#/$defs/U32" }, "f": { "$ref": "#/$defs/U32" }, "g": { "$ref": "#/$defs/U32" },
+        "h": { "$ref": "#/$defs/U32" }, "i": { "$ref": "#/$defs/U32" }, "j": { "$ref": "#/$defs/U32" },
+        "k": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["t1", "t2", "t4", "a", "b", "d", "e", "f", "g", "h", "i", "j", "k"],
+      "additionalProperties": false
+    },
+
+    "ChannelConfigEntry": {
+      "type": "object",
+      "description": "uci.c channel_dump(); one table per present channel. Every key is unconditional except the five override values, which land only beside their *_set flag, and the per-slot distinctive ring pattern ids. Word-valued enums (sip_dtmf_mode, sip_flash_relay, sip_session_refresher, forward_disconnect_battery) dump their canonical uci word; number-valued enums (digit_esc_enabled, local_conf_enabled, call_fwd_local_mode) stay numbers because the number IS their uci vocabulary, and the CLI carries the legend.",
+      "allOf": [
+        { "if": { "properties": { "call_waiting_local_set": { "const": true } }, "required": ["call_waiting_local_set"] }, "then": { "required": ["call_waiting_local"] }, "else": { "not": { "required": ["call_waiting_local"] } } },
+        { "if": { "properties": { "cid_delivery_local_set": { "const": true } }, "required": ["cid_delivery_local_set"] }, "then": { "required": ["cid_delivery_local"] }, "else": { "not": { "required": ["cid_delivery_local"] } } },
+        { "if": { "properties": { "lec_control_set": { "const": true } }, "required": ["lec_control_set"] }, "then": { "required": ["lec_control"] }, "else": { "not": { "required": ["lec_control"] } } },
+        { "if": { "properties": { "lec_nlp_set": { "const": true } }, "required": ["lec_nlp_set"] }, "then": { "required": ["lec_nlp"] }, "else": { "not": { "required": ["lec_nlp"] } } }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/U32" },
+        "enabled": { "type": "boolean" },
+        "sip_username": { "type": "string" },
+        "sip_auth_username": { "type": "string" },
+        "sip_callerid_name": { "type": "string" },
+        "sip_proxy": { "type": "string" },
+        "sip_outbound_proxy": { "type": "string" },
+        "sip_domain": { "type": "string" },
+        "sip_registrar": { "type": "string" },
+        "sip_realm": { "type": "string" },
+        "transport": { "type": "string" },
+        "local_interface": { "type": "string" },
+        "sip_port": { "$ref": "#/$defs/U32" },
+        "sip_port_set": { "type": "boolean" },
+        "sip_outbound_proxy_port": { "$ref": "#/$defs/U32" },
+        "sip_registrar_port": { "$ref": "#/$defs/U32" },
+        "sip_registration_expiry": { "$ref": "#/$defs/U32" },
+        "sip_register_retry": { "$ref": "#/$defs/U32" },
+        "sip_local_port": { "$ref": "#/$defs/U32" },
+        "sip_tos": { "$ref": "#/$defs/U32" },
+        "options_interval": { "$ref": "#/$defs/U32" },
+        "sip_dtmf_mode": { "$ref": "#/$defs/DtmfModeWord" },
+        "sip_flash_relay": { "$ref": "#/$defs/FlashRelayWord" },
+        "sip_session_max_expires": { "$ref": "#/$defs/U32" },
+        "sip_session_min_interval": { "$ref": "#/$defs/U32" },
+        "sip_session_refresher": { "$ref": "#/$defs/RefresherWord" },
+        "sip_timer_c": { "$ref": "#/$defs/U32" },
+        "digit_map": { "type": "string" },
+        "digit_esc_enabled": { "$ref": "#/$defs/U32", "description": "Emitted as u32, not bool." },
+        "start_digit_timer": { "$ref": "#/$defs/U32" },
+        "interdigit_timeout": { "$ref": "#/$defs/U32" },
+        "interdigit_timeout_long": { "$ref": "#/$defs/U32" },
+        "roh_timer_sec": { "$ref": "#/$defs/U32" },
+        "busy_tone_timer_sec": { "$ref": "#/$defs/U32" },
+        "flash_service_timer_sec": { "$ref": "#/$defs/U32" },
+        "call_waiting_enabled": { "type": "boolean" },
+        "call_waiting_local_set": { "type": "boolean" },
+        "call_waiting_local": { "type": "boolean" },
+        "call_waiting_enable_exten": { "type": "string" },
+        "call_waiting_disable_exten": { "type": "string" },
+        "call_waiting_query_exten": { "type": "string" },
+        "cid_remote_enable": { "type": "boolean" },
+        "cid_outgoing_enable": { "type": "boolean" },
+        "cid_delivery_local_set": { "type": "boolean" },
+        "cid_delivery_local": { "type": "boolean" },
+        "cid_enable_exten": { "type": "string" },
+        "cid_disable_exten": { "type": "string" },
+        "cid_single_call_enable_exten": { "type": "string" },
+        "cid_single_call_disable_exten": { "type": "string" },
+        "call_fwd_local": { "type": "boolean" },
+        "call_fwd_local_mode": { "$ref": "#/$defs/U32" },
+        "call_fwd_uncond_uri": { "type": "string" },
+        "call_fwd_busy_uri": { "type": "string" },
+        "call_fwd_no_answer_uri": { "type": "string" },
+        "call_fwd_no_answer_timeout": { "$ref": "#/$defs/U32" },
+        "call_fwd_uncond_exten": { "type": "string" },
+        "call_fwd_uncond_cancel_exten": { "type": "string" },
+        "call_fwd_uncond_query_exten": { "type": "string" },
+        "call_fwd_busy_exten": { "type": "string" },
+        "call_fwd_busy_cancel_exten": { "type": "string" },
+        "call_fwd_busy_query_exten": { "type": "string" },
+        "call_fwd_no_answer_exten": { "type": "string" },
+        "call_fwd_no_answer_cancel_exten": { "type": "string" },
+        "call_fwd_no_answer_query_exten": { "type": "string" },
+        "call_fwd_unreachable_exten": { "type": "string" },
+        "call_fwd_unreachable_cancel_exten": { "type": "string" },
+        "call_fwd_all_exten": { "type": "string" },
+        "call_fwd_all_cancel_exten": { "type": "string" },
+        "blind_transfer_exten": { "type": "string" },
+        "attended_transfer_exten": { "type": "string" },
+        "consult_transfer_exten": { "type": "string" },
+        "do_not_disturb_enabled": { "type": "boolean" },
+        "do_not_disturb_on_exten": { "type": "string" },
+        "do_not_disturb_off_exten": { "type": "string" },
+        "distinctive_ring_enable": { "type": "boolean" },
+        "distinctive_ring_0": { "type": "string" }, "distinctive_ring_1": { "type": "string" },
+        "distinctive_ring_2": { "type": "string" }, "distinctive_ring_3": { "type": "string" },
+        "distinctive_ring_4": { "type": "string" }, "distinctive_ring_5": { "type": "string" },
+        "distinctive_ring_6": { "type": "string" }, "distinctive_ring_7": { "type": "string" },
+        "distinctive_ring_8": { "type": "string" }, "distinctive_ring_9": { "type": "string" },
+        "distinctive_ring_def_0": { "$ref": "#/$defs/U32" }, "distinctive_ring_def_1": { "$ref": "#/$defs/U32" },
+        "distinctive_ring_def_2": { "$ref": "#/$defs/U32" }, "distinctive_ring_def_3": { "$ref": "#/$defs/U32" },
+        "distinctive_ring_def_4": { "$ref": "#/$defs/U32" }, "distinctive_ring_def_5": { "$ref": "#/$defs/U32" },
+        "distinctive_ring_def_6": { "$ref": "#/$defs/U32" }, "distinctive_ring_def_7": { "$ref": "#/$defs/U32" },
+        "distinctive_ring_def_8": { "$ref": "#/$defs/U32" }, "distinctive_ring_def_9": { "$ref": "#/$defs/U32" },
+        "warmline_enable": { "type": "boolean" },
+        "warmline_number": { "type": "string" },
+        "warmline_timeout": { "$ref": "#/$defs/U32" },
+        "forward_disconnect_delay": { "$ref": "#/$defs/U32" },
+        "forward_disconnect_battery": { "$ref": "#/$defs/FwdDiscBatteryWord" },
+        "amwi": { "type": "boolean" },
+        "vmwi": { "type": "boolean" },
+        "lec_control_set": { "type": "boolean" },
+        "lec_control": { "type": "boolean" },
+        "lec_enable": { "type": "boolean" },
+        "lec_nlp_set": { "type": "boolean" },
+        "lec_nlp": { "type": "boolean" },
+        "lec_tone_latch": { "type": "boolean" },
+        "lec_tone_force_disable": { "type": "boolean" },
+        "half_db_rx_loss": { "type": "boolean" },
+        "half_db_tx_loss": { "type": "boolean" },
+        "ps_tx_gain": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32." },
+        "ps_rx_gain": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32." },
+        "local_conf_enabled": { "$ref": "#/$defs/U32", "description": "Emitted as u32, not bool." },
+        "default_packetization_rate": { "$ref": "#/$defs/U32" },
+        "cn_enable": { "type": "boolean" },
+        "g711a_ptype": { "$ref": "#/$defs/U32" },
+        "g729a_ptype": { "$ref": "#/$defs/U32" },
+        "g726_ptype": { "$ref": "#/$defs/U32" },
+        "g722_ptype": { "$ref": "#/$defs/U32" },
+        "opus_ptype": { "$ref": "#/$defs/U32" },
+        "fax_t38_enable": { "type": "boolean" },
+        "fax_upspeed_follow": { "type": "boolean", "description": "Follow a far-end G.711 fax upspeed (call.c fax_follow_check). Defaults to 1." },
+        "prack": { "type": "boolean", "description": "Reliable provisional responses on the UAS side (uci.c channel_media_parse). Defaults to 0." },
+        "early_media_enabled": { "type": "boolean", "description": "Program the stream of an 18x answer before the call is answered (uci.c channel_media_parse). Defaults to 1." },
+        "jitter_target": { "$ref": "#/$defs/U32" },
+        "jitter_buffer_max": { "$ref": "#/$defs/U32" },
+        "rtp_tos": { "$ref": "#/$defs/U32" },
+        "rtcp_tos": { "$ref": "#/$defs/U32" },
+        "rtp_local_port_min": { "$ref": "#/$defs/U32" },
+        "rtp_local_port_max": { "$ref": "#/$defs/U32" },
+        "rtcp_cname": { "type": "string" },
+        "timers": { "$ref": "#/$defs/ChannelTimersTable" }
+      },
+      "required": ["id", "enabled", "sip_username", "sip_auth_username", "sip_callerid_name", "sip_proxy", "sip_outbound_proxy", "sip_domain", "sip_registrar", "sip_realm", "transport", "local_interface", "sip_port", "sip_port_set", "sip_outbound_proxy_port", "sip_registrar_port", "sip_registration_expiry", "sip_register_retry", "sip_local_port", "sip_tos", "options_interval", "sip_dtmf_mode", "sip_flash_relay", "sip_session_max_expires", "sip_session_min_interval", "sip_session_refresher", "sip_timer_c", "digit_map", "digit_esc_enabled", "start_digit_timer", "interdigit_timeout", "interdigit_timeout_long", "roh_timer_sec", "busy_tone_timer_sec", "flash_service_timer_sec", "call_waiting_enabled", "call_waiting_local_set", "call_waiting_enable_exten", "call_waiting_disable_exten", "call_waiting_query_exten", "cid_remote_enable", "cid_outgoing_enable", "cid_delivery_local_set", "cid_enable_exten", "cid_disable_exten", "cid_single_call_enable_exten", "cid_single_call_disable_exten", "call_fwd_local", "call_fwd_local_mode", "call_fwd_uncond_uri", "call_fwd_busy_uri", "call_fwd_no_answer_uri", "call_fwd_no_answer_timeout", "call_fwd_uncond_exten", "call_fwd_uncond_cancel_exten", "call_fwd_uncond_query_exten", "call_fwd_busy_exten", "call_fwd_busy_cancel_exten", "call_fwd_busy_query_exten", "call_fwd_no_answer_exten", "call_fwd_no_answer_cancel_exten", "call_fwd_no_answer_query_exten", "call_fwd_unreachable_exten", "call_fwd_unreachable_cancel_exten", "call_fwd_all_exten", "call_fwd_all_cancel_exten", "blind_transfer_exten", "attended_transfer_exten", "consult_transfer_exten", "do_not_disturb_enabled", "do_not_disturb_on_exten", "do_not_disturb_off_exten", "distinctive_ring_enable", "distinctive_ring_0", "distinctive_ring_1", "distinctive_ring_2", "distinctive_ring_3", "distinctive_ring_4", "distinctive_ring_5", "distinctive_ring_6", "distinctive_ring_7", "distinctive_ring_8", "distinctive_ring_9", "warmline_enable", "warmline_number", "warmline_timeout", "forward_disconnect_delay", "forward_disconnect_battery", "amwi", "vmwi", "lec_control_set", "lec_enable", "lec_nlp_set", "lec_tone_latch", "lec_tone_force_disable", "half_db_rx_loss", "half_db_tx_loss", "ps_tx_gain", "ps_rx_gain", "local_conf_enabled", "default_packetization_rate", "cn_enable", "g711a_ptype", "g729a_ptype", "g726_ptype", "g722_ptype", "opus_ptype", "fax_t38_enable", "fax_upspeed_follow", "prack", "early_media_enabled", "jitter_target", "jitter_buffer_max", "rtp_tos", "rtcp_tos", "rtp_local_port_min", "rtp_local_port_max", "rtcp_cname", "timers"],
+      "additionalProperties": false
+    },
+
+    "CodecConfigEntry": {
+      "type": "object",
+      "description": "uci.c codec_dump(); one table per configured codec row, count-bounded.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "silence_suppression": { "type": "boolean" },
+        "tr104_id": { "$ref": "#/$defs/U32" },
+        "priority": { "$ref": "#/$defs/U32" },
+        "default_priority": { "$ref": "#/$defs/U32" },
+        "channel": { "$ref": "#/$defs/U32" },
+        "bitrate": { "$ref": "#/$defs/U32" },
+        "fec": { "type": "boolean" },
+        "complexity": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["enabled", "silence_suppression", "tr104_id", "priority", "default_priority", "channel", "bitrate", "fec", "complexity"],
+      "additionalProperties": false
+    },
+
+    "DumpConfigReply": {
+      "type": "object",
+      "description": "uci.c cfg_dump(). tls_cert_username and tls_cert_password are deliberately never emitted.",
+      "properties": {
+        "loaded": { "type": "boolean" },
+        "enabled": { "type": "boolean" },
+        "channels": { "$ref": "#/$defs/U32" },
+        "local_interface": { "type": "string" },
+        "transport": { "type": "string" },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolWord",
+          "description": "uci protocol (cfg/uci.c base_fields)."
+        },
+        "srtp_enabled": { "type": "boolean" },
+        "region": { "type": "string" },
+        "restrict_source": { "$ref": "#/$defs/U32" },
+        "options_interval": { "$ref": "#/$defs/U32" },
+        "keepalive_interval": { "$ref": "#/$defs/U32" },
+        "keepalive_enabled": { "type": "boolean" },
+        "dns_cache_update_mode": { "type": "boolean" },
+        "dns_move_unregister": { "type": "boolean", "description": "uci dns_move_unregister. True removes the binding at the server a DNS move left, with a REGISTER of Expires 0 sent after the new server granted one (reg.c binding_remove())." },
+        "dns_srv_mode": { "$ref": "#/$defs/DnsSrvModeWord" },
+        "dns_linger": { "$ref": "#/$defs/U32" },
+        "mwi_subscribe": { "type": "boolean" },
+        "star_codes_local": { "type": "boolean", "description": "The base star_codes_local switch: whether the star code schema defaults are local. With it false a channel's absent code loads and dumps empty (uci.c opt_code())." },
+        "rtcp_enabled": { "type": "boolean" },
+        "ipv6_enabled": { "type": "boolean" },
+        "rtcp_interval": { "$ref": "#/$defs/U32" },
+        "alert_info_prefix": { "type": "string" },
+        "tls_cert_path": { "type": "string" },
+        "tls_server_verification_enabled": { "type": "boolean" },
+        "tls_keylog_enabled": { "type": "boolean" },
+        "hal": { "$ref": "#/$defs/HalConfigTable" },
+        "debug": {
+          "type": "object",
+          "properties": { "trace": { "type": "string", "description": "The uci trace-domain list." } },
+          "required": ["trace"],
+          "additionalProperties": false
+        },
+        "mgcp": { "$ref": "#/$defs/MgcpConfigTable" },
+        "channel": { "type": "array", "items": { "$ref": "#/$defs/ChannelConfigEntry" }, "maxItems": 2 },
+        "codec": { "type": "array", "items": { "$ref": "#/$defs/CodecConfigEntry" } }
+      },
+      "required": ["loaded", "enabled", "channels", "local_interface", "transport", "protocol", "srtp_enabled", "region", "restrict_source", "options_interval", "keepalive_interval", "keepalive_enabled", "dns_cache_update_mode", "dns_move_unregister", "dns_srv_mode", "dns_linger", "mwi_subscribe", "star_codes_local", "rtcp_enabled", "ipv6_enabled", "rtcp_interval", "alert_info_prefix", "tls_cert_path", "tls_server_verification_enabled", "tls_keylog_enabled", "hal", "debug", "mgcp", "channel", "codec"],
+      "additionalProperties": false
+    },
+
+    "StubHookArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32", "description": "Defaults to 0 (stub.c stub_ubus_hook())." },
+        "state": { "enum": ["seize", "offhook", "release", "onhook", "flash", "pulse"], "description": "Required; only seize and release move the stored hook state." },
+        "pulses": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["state"],
+      "additionalProperties": false
+    },
+    "StubDigitArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "digit": { "type": "string", "minLength": 1, "description": "Required; only the first character is used." },
+        "duration": { "$ref": "#/$defs/U32", "description": "Defaults to 100 ms." },
+        "remote": { "type": "boolean" }
+      },
+      "required": ["digit"],
+      "additionalProperties": false
+    },
+    "StubToneArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "code": { "type": "string", "description": "Required; parsed by stub.c tone_code_parse()." },
+        "direction": { "enum": ["local", "remote"], "description": "Defaults to local." },
+        "end": { "type": "boolean", "description": "The edge of the row (hal.h u.tone.end): false is the start row every fax gate reads, true the end row the return-to-voice rule times. Defaults to false." },
+        "duration": { "$ref": "#/$defs/U32", "description": "Truncated to 16 bits. On an end row it is the duration call.c call_fax_tone_note() adds to the leg's running total." }
+      },
+      "required": ["code"],
+      "additionalProperties": false
+    },
+    "StubLineArgs": {
+      "type": "object",
+      "properties": { "line": { "$ref": "#/$defs/U32", "description": "Defaults to 0." } },
+      "additionalProperties": false
+    },
+    "StubRingArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "duration": { "$ref": "#/$defs/U32", "description": "Non-zero produces a ring end event when it elapses; ring_stop shares the policy and ignores it." }
+      },
+      "additionalProperties": false
+    },
+    "StubMediaStatsArgs": {
+      "type": "object",
+      "description": "stub.c stub_ubus_media_stats(): counter overrides for the canned media answer; the numeric overrides are UNSPEC so INT32 and INT64 both pass, the MOS pair is two-decimal text.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "stream": { "$ref": "#/$defs/U32" },
+        "packets_sent": { "type": "integer" }, "packets_recv": { "type": "integer" },
+        "packets_lost": { "type": "integer" }, "packets_discarded": { "type": "integer" },
+        "loss_rate": { "type": "integer" }, "loss_rate_far": { "type": "integer" },
+        "jitter_avg": { "type": "integer" }, "jitter_max": { "type": "integer" },
+        "jitter_far": { "type": "integer" }, "rtt_avg": { "type": "integer" },
+        "rtt_max": { "type": "integer" }, "bytes_sent": { "type": "integer" },
+        "bytes_recv": { "type": "integer" },
+        "mos_lq": { "type": "string" }, "mos_cq": { "type": "string" },
+        "rfactor": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "StubStreamArgs": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "stream": { "$ref": "#/$defs/U32" },
+        "up": { "type": "boolean", "description": "Defaults to true." }
+      },
+      "additionalProperties": false
+    },
+    "StubRtpRxArgs": {
+      "type": "object",
+      "description": "stub.c stub_ubus_rtp_rx(): one HAL_EVENT_RTP_FIRST_RX for a running stream, which this backend carries no RTP socket to produce. A stream that is not running is refused with UBUS_STATUS_INVALID_ARGUMENT.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32", "description": "Defaults to 0." },
+        "stream": { "$ref": "#/$defs/U32", "description": "Defaults to 0." }
+      },
+      "additionalProperties": false
+    },
+    "StubStreamReply": {
+      "type": "object",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "stream": { "$ref": "#/$defs/U32" },
+        "running": { "type": "boolean", "description": "The post-op flag read back (stub.c stub_ubus_stream())." }
+      },
+      "required": ["line", "stream", "running"],
+      "additionalProperties": false
+    },
+
+    "StubStreamEntry": {
+      "type": "object",
+      "description": "stub.c stream_dump() + srtp_dump(); every stream index is emitted. The key CRCs are CRC-32 of the key material, never the key, and leave with the stream because the stop zeroizes the block.",
+      "properties": {
+        "index": { "$ref": "#/$defs/U32" },
+        "configured": { "type": "boolean" },
+        "running": { "type": "boolean" },
+        "codec": { "$ref": "#/$defs/U32", "description": "Raw hal_codec number." },
+        "codec_name": { "$ref": "#/$defs/StubCodecWord" },
+        "payload_type": { "$ref": "#/$defs/U32" },
+        "ptime": { "$ref": "#/$defs/U32" },
+        "direction": { "$ref": "#/$defs/U32", "description": "Raw direction enum." },
+        "tx_silence": { "type": "boolean" },
+        "passthrough": { "type": "integer", "minimum": 0, "maximum": 2, "description": "stub.c stream_dump(); raw hal_passthrough kind of the applied description: 0 none, 1 modem, 2 fax." },
+        "vad": { "type": "boolean", "description": "stub.c stream_dump(); hal_media.vad of the applied description: the generic silence detector. An armed annexb replaces it, and an unarmed G.729 leg clears it in proto/shared/media_fill.c media_fill(), so the two are read together." },
+        "cng": { "type": "boolean", "description": "stub.c stream_dump(); hal_media.cng of the applied description: RFC 3389 comfort noise on PT 13." },
+        "annexb": { "type": "boolean", "description": "stub.c stream_dump(); hal_media.annexb of the applied description: our own G.729 Annex B transmit DTX, armed only on a backend with HAL_FEAT_G729B, a codec section with silence suppression and a peer that wrote annexb=yes." },
+        "remote_port": { "$ref": "#/$defs/U32" },
+        "local_ipver": { "$ref": "#/$defs/U32", "description": "stub.c addr_dump(); hal_addr.ipver of the applied local endpoint: 4, 6, or 0 for a stream that carries no description." },
+        "local_addr": { "type": "string", "description": "stub.c addr_dump(); the local address in presentation form, and the empty string for an ipver that is neither 4 nor 6." },
+        "local_port": { "$ref": "#/$defs/U32", "description": "stub.c addr_dump(); hal_addr.port of the applied local endpoint. The remote side has no twin here: remote_port above is that key." },
+        "local_rtcp_port": { "$ref": "#/$defs/U32", "description": "stub.c addr_dump(); the RTCP port a live backend opens: the named rtcp_port, else port + 1, else 0 when the endpoint carries no port at all (hal.h struct hal_addr)." },
+        "remote_ipver": { "$ref": "#/$defs/U32", "description": "stub.c addr_dump(); hal_addr.ipver of the applied remote endpoint." },
+        "remote_addr": { "type": "string", "description": "stub.c addr_dump(); the remote address in presentation form, and the empty string for an ipver that is neither 4 nor 6." },
+        "remote_rtcp_port": { "$ref": "#/$defs/U32", "description": "stub.c addr_dump(); the RTCP port a live backend opens, on the local_rtcp_port rule." },
+        "rtcp_remote_ipver": { "$ref": "#/$defs/U32", "description": "stub.c rtcp_remote_dump(); present only when the peer named an RTCP address of its own (RFC 3605 2.1, hal_media.rtcp_remote). Absent means RTCP goes to the media address." },
+        "rtcp_remote_addr": { "type": "string", "description": "stub.c rtcp_remote_dump(); the peer's own RTCP address in presentation form; it lands with rtcp_remote_ipver and never alone." },
+        "bind_dev": { "type": "string", "description": "Present iff the stream took a device; absent means it binds unscoped." },
+        "t38_max_bit_rate": { "$ref": "#/$defs/U32" },
+        "t38_max_datagram": { "$ref": "#/$defs/U32" },
+        "t38_ec": { "$ref": "#/$defs/U32" },
+        "opus_bitrate": { "$ref": "#/$defs/U32" },
+        "opus_complexity": { "$ref": "#/$defs/U32" },
+        "opus_max_bandwidth": { "$ref": "#/$defs/U32" },
+        "opus_fec": { "type": "boolean" },
+        "srtp_suite": { "$ref": "#/$defs/U32", "description": "Raw hal_srtp number." },
+        "srtp_suite_name": { "$ref": "#/$defs/StubSrtpWord" },
+        "srtp_key_tx_crc": { "$ref": "#/$defs/U64", "description": "CRC-32 widened to u64 so it never renders negative; present iff a suite is set." },
+        "srtp_key_rx_crc": { "$ref": "#/$defs/U64" },
+        "stats_override": { "type": "boolean" },
+        "fax_applied": { "type": "boolean" },
+        "fax_mode": { "$ref": "#/$defs/U32" },
+        "fax_codec": { "$ref": "#/$defs/U32" },
+        "fax_payload_type": { "$ref": "#/$defs/U32" },
+        "fax_ec_disable": { "type": "boolean" },
+        "fax_vad_disable": { "type": "boolean" },
+        "fax_cng_disable": { "type": "boolean" },
+        "fax_silence_comp_disable": { "type": "boolean" },
+        "fax_jb_fixed": { "type": "boolean" }
+      },
+      "required": ["index", "configured", "running", "codec", "codec_name", "payload_type", "ptime", "direction", "tx_silence", "passthrough", "vad", "cng", "annexb", "remote_port", "local_ipver", "local_addr", "local_port", "local_rtcp_port", "remote_ipver", "remote_addr", "remote_rtcp_port", "t38_max_bit_rate", "t38_max_datagram", "t38_ec", "opus_bitrate", "opus_complexity", "opus_max_bandwidth", "opus_fec", "srtp_suite", "srtp_suite_name", "stats_override", "fax_applied", "fax_mode", "fax_codec", "fax_payload_type", "fax_ec_disable", "fax_vad_disable", "fax_cng_disable", "fax_silence_comp_disable", "fax_jb_fixed"],
+      "dependentRequired": {
+        "srtp_key_tx_crc": ["srtp_key_rx_crc"],
+        "srtp_key_rx_crc": ["srtp_key_tx_crc"],
+        "rtcp_remote_ipver": ["rtcp_remote_addr"],
+        "rtcp_remote_addr": ["rtcp_remote_ipver"]
+      },
+      "additionalProperties": false
+    },
+
+    "StubLineEntry": {
+      "type": "object",
+      "description": "stub.c stub_ubus_dump(); one row per capability line. The enum-valued keys are raw numbers, not names.",
+      "properties": {
+        "index": { "$ref": "#/$defs/U32" },
+        "offhook": { "type": "boolean", "description": "Stored hook state; moved only by seize and release, not flash or pulse." },
+        "ringing": { "type": "boolean" },
+        "state": { "$ref": "#/$defs/U32" },
+        "polarity": { "$ref": "#/$defs/U32" },
+        "mwi": { "$ref": "#/$defs/U32" },
+        "tone": { "$ref": "#/$defs/U32" },
+        "tone_duration_ms": { "$ref": "#/$defs/U32" },
+        "cw_variant": { "$ref": "#/$defs/U32", "description": "The last call-waiting variant cw_tone_play recorded; 0 is the plain tone." },
+        "conf": { "$ref": "#/$defs/U32" },
+        "loop_mode": { "$ref": "#/$defs/U32", "description": "The loop the core last asked for (stub.c stub_line_loop_set()): 0 off, 1 self, 2 peer (hal.h hal_loop_mode). Dumped whatever the mode is, as conf above is." },
+        "loop_peer": { "$ref": "#/$defs/U32", "description": "The line a peer loop plays; 0 under the other two modes." },
+        "loop_delay_ms": { "$ref": "#/$defs/U32", "description": "The playout delay of a self loop; 0 under the other two modes." },
+        "cid_number": { "type": "string" },
+        "cid_name": { "type": "string" },
+        "cid_format": { "$ref": "#/$defs/U32" },
+        "cid_number_private": { "type": "boolean" },
+        "cid_name_private": { "type": "boolean" },
+        "cid_blockinfo": { "type": "string" },
+        "hook_flash_min": { "$ref": "#/$defs/U32" },
+        "hook_flash_max": { "$ref": "#/$defs/U32" },
+        "hook_release_min": { "$ref": "#/$defs/U32" },
+        "latch_clears": { "$ref": "#/$defs/U32", "description": "How often the call layer dropped this line's tone-disabler latch (stub.c stub_line_lec_latch_clear(), hal.h line_lec_latch_clear). The stub runs no disabler, so the count is the whole record of the release." },
+        "stream": { "type": "array", "items": { "$ref": "#/$defs/StubStreamEntry" } }
+      },
+      "required": ["index", "offhook", "ringing", "state", "polarity", "mwi", "tone", "tone_duration_ms", "cw_variant", "conf", "loop_mode", "loop_peer", "loop_delay_ms", "cid_number", "cid_name", "cid_format", "cid_number_private", "cid_name_private", "cid_blockinfo", "hook_flash_min", "hook_flash_max", "hook_release_min", "latch_clears", "stream"],
+      "additionalProperties": false
+    },
+
+    "StubDumpReply": {
+      "type": "object",
+      "properties": {
+        "region": { "type": "string" },
+        "line": { "type": "array", "items": { "$ref": "#/$defs/StubLineEntry" } }
+      },
+      "required": ["region", "line"],
+      "additionalProperties": false
+    },
+
+    "VoiceStatusCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "status" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/StatusReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceReloadCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "reload" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/ReloadReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceDumpConfigCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "dump_config" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/DumpConfigReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceCdrCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "cdr" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/CdrReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceStatsCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "stats" },
+        "args": {
+          "type": "object",
+          "properties": { "line": { "$ref": "#/$defs/U32", "description": "Optional 0-based filter; out of range answers Invalid argument." } },
+          "additionalProperties": false
+        },
+        "reply": { "$ref": "#/$defs/StatsReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceStatsResetCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "stats_reset" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/StatsResetReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceStatsLiveCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "stats_live" },
+        "args": { "$ref": "#/$defs/StatsLiveArgs" },
+        "reply": { "$ref": "#/$defs/StatsLiveReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceLineTestCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "line_test" },
+        "args": { "$ref": "#/$defs/LineTestArgs" },
+        "reply": { "$ref": "#/$defs/LineTestReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceLoopTestCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "loop_test" },
+        "args": { "$ref": "#/$defs/LoopTestArgs" },
+        "reply": { "$ref": "#/$defs/LoopTestReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceRegisterCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "register" },
+        "args": { "$ref": "#/$defs/LineArgs" },
+        "reply": {
+          "allOf": [
+            { "$ref": "#/$defs/AccountCmdReply" },
+            { "properties": { "requested": { "const": "register" } } }
+          ]
+        }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceUnregisterCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "unregister" },
+        "args": { "$ref": "#/$defs/LineArgs" },
+        "reply": {
+          "allOf": [
+            { "$ref": "#/$defs/AccountCmdReply" },
+            { "properties": { "requested": { "const": "unregister" } } }
+          ]
+        }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceSeizeCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "seize" },
+        "args": { "$ref": "#/$defs/LineArgs" },
+        "reply": {
+          "allOf": [
+            { "$ref": "#/$defs/InjectReply" },
+            { "properties": { "injected": { "const": "seize" } }, "not": { "required": ["digits"] } }
+          ]
+        }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceReleaseCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "release" },
+        "args": { "$ref": "#/$defs/LineArgs" },
+        "reply": {
+          "allOf": [
+            { "$ref": "#/$defs/InjectReply" },
+            { "properties": { "injected": { "const": "release" } }, "not": { "required": ["digits"] } }
+          ]
+        }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "VoiceDialCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "dial" },
+        "args": { "$ref": "#/$defs/DialArgs" },
+        "reply": {
+          "allOf": [
+            { "$ref": "#/$defs/InjectReply" },
+            { "properties": { "injected": { "const": "dial" } }, "required": ["digits"] }
+          ]
+        }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "TraceGetCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.trace" },
+        "method": { "const": "get" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/TraceTable" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "CalltraceArmCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.calltrace" },
+        "method": { "const": "arm" },
+        "args": { "$ref": "#/$defs/CalltraceArmArgs" },
+        "reply": { "$ref": "#/$defs/CalltraceStatus" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "CalltraceCancelCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.calltrace" },
+        "method": { "const": "cancel" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/CalltraceStatus" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "CalltraceStatusCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.calltrace" },
+        "method": { "const": "status" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/CalltraceStatus" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+
+    "TraceSetCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.trace" },
+        "method": { "const": "set" },
+        "args": { "$ref": "#/$defs/TraceSetArgs" },
+        "reply": { "$ref": "#/$defs/TraceTable" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubHookCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "hook" },
+        "args": { "$ref": "#/$defs/StubHookArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubDigitCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "digit" },
+        "args": { "$ref": "#/$defs/StubDigitArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubToneCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "tone" },
+        "args": { "$ref": "#/$defs/StubToneArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubFlashCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "flash" },
+        "args": { "$ref": "#/$defs/StubLineArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubRingCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "ring" },
+        "args": { "$ref": "#/$defs/StubRingArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubRingStopCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "ring_stop" },
+        "args": { "$ref": "#/$defs/StubRingArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubMediaStatsCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "media_stats" },
+        "args": { "$ref": "#/$defs/StubMediaStatsArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubStreamCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "stream" },
+        "args": { "$ref": "#/$defs/StubStreamArgs" },
+        "reply": { "$ref": "#/$defs/StubStreamReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubRtpRxCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "rtp_rx" },
+        "args": { "$ref": "#/$defs/StubRtpRxArgs" },
+        "reply": { "$ref": "#/$defs/EmptyReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "StubDumpCall": {
+      "type": "object",
+      "properties": {
+        "object": { "const": "voice.stub" },
+        "method": { "const": "dump" },
+        "args": { "$ref": "#/$defs/NoArgs" },
+        "reply": { "$ref": "#/$defs/StubDumpReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    }
+  }
+}

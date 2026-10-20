@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The DUT follows a G.711 fax upspeed that the far end makes: the calling side
+  of a fax call.
+
+  This scenario answers with G.729 alone, so the committed codec is one that
+  no fax carrier survives. The runner then injects an answer tone from the
+  wire. The tone sets the modem media policy on the stream that the call
+  already runs, and applies no fax profile.
+
+  This scenario then re-INVITEs with its audio list narrowed to G.711 and
+  `sendrecv`. A fax gateway sends this offer when it switches its own media,
+  and this offer applies the profile. The 200 of the DUT must select PCMU,
+  drop G.729 and read `sendrecv`.
+
+  The DUT must put its DSP into the fax passthrough on the codec that the
+  answer selected. It must send no re-INVITE of its own, because the tone
+  recognizer never triggers an offer. A re-INVITE from the DUT counts as an
+  unexpected message in SIPp, and fails the run.
+
+  RFC 3261 section 14, RFC 3264 section 8, ITU-T T.30 answer tone.
+-->
+<scenario name="UAS answered call the DUT follows into a far-end G.711 upspeed">
+  <!-- The DUT can register against this peer before its call, and a UAS run
+       has one scenario for every request that reaches it. The first receive
+       therefore takes the REGISTER too, and its branch answers 200 and ends.
+       The action list of that receive runs for the REGISTER as well, so it
+       stores the values of the INVITE, and a later receive checks them
+       (test/sipp/README.md, "The REGISTER branch"). -->
+  <recv request="REGISTER|INVITE" regexp_match="true" timeout="60000" rrs="true"
+        next="call" test="invite_seen">
+    <action>
+      <ereg regexp="^INVITE[[:space:]]" search_in="msg" assign_to="invite_seen"/>
+      <ereg regexp="SIP/2.0/([^[:space:]]+)[[:space:]]+([^;[:space:]]+).*branch=([^;[:space:]]+)"
+            search_in="hdr" header="Via:"
+            assign_to="register_via,register_transport,register_sent_by,register_branch"/>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg"
+            assign_to="to_match,local_uri"/>
+      <!-- the voice call offers the configured priority order, G.729 first -->
+      <ereg regexp="a=rtpmap:18 G729/8000" search_in="body"
+            assign_to="voice_offer"/>
+    </action>
+  </recv>
+
+  <send next="registered_done">
+    <![CDATA[
+      SIP/2.0 200 OK
+      Via: SIP/2.0/[$register_transport] [$register_sent_by];branch=[$register_branch];received=[remote_host];rport=[remote_port]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      [last_Expires:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <label id="call"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp far fax
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 101
+      a=rtpmap:18 G729/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000">
+    <action>
+      <ereg regexp="." search_in="var" variable="from_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="to_match"
+            check_it="true" assign_to="initial_check"/>
+      <ereg regexp="." search_in="var" variable="voice_offer"
+            check_it="true" assign_to="initial_check"/>
+    </action>
+  </recv>
+
+  <!-- The window the runner injects the remote answer tone in. The hint the
+       DUT records lives for 10 s (call.h CALL_FAX_HINT_WINDOW_MS), so five
+       seconds leaves the offer below comfortably inside it while giving the
+       runner room to read the stub dump back and prove the tone armed the
+       modem kind with no fax profile behind it. -->
+  <pause milliseconds="5000"/>
+
+  <!-- The far end's own upspeed: the audio list narrowed to G.711, comfort
+       noise gone, telephone-event kept, sendrecv. Nothing else on the wire
+       says "fax", which is why the DUT needs the tone as well. -->
+  <send retrans="500" start_txn="upspeed">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp far fax
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 8 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:8 PCMA/8000
+      a=rtpmap:101 telephone-event/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="upspeed" timeout="10000" rrs="true">
+    <action>
+      <!-- the answer names one G.711 and the G.729 the call was committed to
+           is gone from it -->
+      <ereg regexp="a=rtpmap:0 PCMU/8000" search_in="body" check_it="true"
+            assign_to="follow_answer"/>
+      <ereg regexp="a=rtpmap:18" search_in="body" check_it_inverse="true"
+            assign_to="follow_no_g729"/>
+      <ereg regexp="a=sendrecv" search_in="body" check_it="true"
+            assign_to="follow_sendrecv"/>
+    </action>
+  </recv>
+
+  <send ack_txn="upspeed">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- Hold the followed call long enough for the runner to read the stub dump
+       back, and long enough for a re-INVITE of the DUT's own to arrive if the
+       recognizer ever became a trigger. -->
+  <pause milliseconds="3000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-[pid]-[call_number]
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+  <label id="registered_done"/>
+  <Reference variables="register_via,initial_check,follow_answer,follow_no_g729,follow_sendrecv"/>
+</scenario>

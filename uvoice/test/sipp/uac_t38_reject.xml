@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Verifies what a refused T.38 upgrade leaves behind: the leg keeps its G.711
+  passthrough, and no second image offer follows the 488.
+
+  This peer calls the DUT with G.729 alone, the runner answers, and the 200
+  must carry `a=rtpmap:18 G729/8000`. The DUT needs `fax_t38_enable` 1.
+
+  The runner reports the CED answer tone first. It converts the DUT to G.711
+  fax passthrough and puts the upspeed re-INVITE on the wire. That offer must
+  carry `m=audio RTP/AVP 0 8 101`, exactly those three formats, anchored at
+  the carriage return. Inverse checks refuse `a=rtpmap:18` (no G.729),
+  `a=rtpmap:13 CN` (no comfort noise) and `m=image`. This peer answers it 200
+  with PCMU: that passthrough is the leg that the upgrade runs from.
+
+  The runner then reports the V.21 preamble. The image re-INVITE that follows
+  must carry `m=image` with `udptl t38`, and this peer answers it 488 Not
+  Acceptable Here.
+
+  The DUT must keep the call on its G.711 passthrough. It attempts the upgrade
+  once per leg, so it must not offer an image stream again on this dialog. It
+  must not start a second conversion after the refusal either. The scenario
+  can catch a late re-INVITE only in the 3000 ms pause before the BYE and in
+  the BYE exchange. SIPp fails the scenario on that unexpected message.
+
+  RFC 3261 section 14, RFC 3264 section 8, ITU-T T.30, ITU-T T.38.
+-->
+<scenario name="UAC inbound call with a refused DUT T.38 upgrade">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp T38
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 18 101
+      a=rtpmap:18 G729/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true">
+    <action>
+      <ereg regexp="a=rtpmap:18 G729/8000" search_in="body" check_it="true"
+            assign_to="voice_codec"/>
+    </action>
+  </recv>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <!-- The upspeed of the answer tone, which is the passthrough the upgrade
+       runs from. The DUT converts its own stream and tells the far end what it
+       now sends: G.711 alone, the telephone-event the channel negotiated
+       beside it, and no image section anywhere. -->
+  <recv request="INVITE" timeout="30000">
+    <action>
+      <!-- the control character is the CR that ends the m= line, so the
+           format list is exactly these three entries and nothing more -->
+      <ereg regexp="m=audio[[:space:]]+[0-9]+[[:space:]]+RTP/AVP 0 8 101[[:cntrl:]]"
+            search_in="body" check_it="true" assign_to="fax_offer"/>
+      <ereg regexp="a=rtpmap:18" search_in="body" check_it_inverse="true"
+            assign_to="fax_no_g729"/>
+      <ereg regexp="a=rtpmap:13 CN" search_in="body" check_it_inverse="true"
+            assign_to="fax_no_cn"/>
+      <ereg regexp="m=image" search_in="body" check_it_inverse="true"
+            assign_to="fax_no_image"/>
+    </action>
+  </recv>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp T38
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The upgrade the runner's preamble put on the wire, refused. -->
+  <recv request="INVITE" timeout="30000">
+    <action>
+      <ereg regexp="m=image[[:space:]]+[1-9][0-9]*[[:space:]]+udptl[[:space:]]+t38[[:cntrl:]]"
+            search_in="body" check_it="true" assign_to="image_offer"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 488 Not Acceptable Here
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- Hold the refused call long enough for the runner to read the stream
+       back, and long enough for a second image offer to have arrived if the
+       attempt latch were not spent. -->
+  <pause milliseconds="3000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+  <Reference variables="voice_codec,image_offer,fax_offer,fax_no_g729,fax_no_cn,fax_no_image"/>
+</scenario>

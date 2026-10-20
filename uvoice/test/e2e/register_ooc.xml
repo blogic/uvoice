@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The out-of-call registrar of a caller: every REGISTER gets 200 with the
+  expiry of the expires keyword. A UAC run of SIPp gives a REGISTER of the DUT
+  to its out-of-call scenario, so the line keeps its binding while the caller
+  runs. sipp_uac_start() in run_e2e.sh passes -key expires 3600 on every run.
+
+  The inbound churn flow passes 10. sip_reg_refresh_secs() (src/proto/sip/reg.c)
+  takes the lesser of half the expiry and the expiry minus thirty seconds,
+  with a fifteen second floor. If that floor is not below the expiry, it
+  takes half the expiry with a two second floor instead. The line therefore
+  re-registers every five seconds, and a flow that runs longer than that
+  carries the refresh traffic of the field capture beside its calls.
+-->
+<scenario name="REGISTER out-of-call responder">
+  <recv request="REGISTER"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-register
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      Expires: [expires]
+      Content-Length: 0
+
+    ]]>
+  </send>
+</scenario>

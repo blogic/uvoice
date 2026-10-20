@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Verifies the SDES SRTP answer of an inbound DUT call: the 200 must mirror
+  exactly one of the two offered crypto attributes.
+
+  This peer offers RTP/SAVP with two crypto attributes: tag 1 with
+  `AES_CM_128_HMAC_SHA1_80` and tag 2 with `AES_CM_128_HMAC_SHA1_32`. The DUT
+  runs with `srtp_enabled` 1. Its 200 must carry RTP/SAVP and one crypto
+  attribute, which mirrors the chosen tag with the DUT's own key. A key
+  belongs to one direction, and one side never echoes the key of the other
+  (RFC 4568 section 5.1.2).
+
+  The DUT scans the offered lines in offer order and takes the first usable
+  one, which is tag 1 here. The 200 must carry `a=crypto:1` with
+  the _80 suite and a base64 key of 40 characters that ends at a carriage
+  return. An inverse check refuses `a=crypto:2`.
+
+  The two keys are the 30 ASCII bytes "uvoice-srtp-e2e-uac-offer-t001" and
+  "uvoice-srtp-e2e-uac-offer-t002". Fixed readable keys make the end-to-end
+  digest check possible. The runner recomputes the zlib crc32 of the tag 1
+  key, and compares it with the digest that the DUT programmed into its
+  receive direction.
+
+  No `rtp_echo` runs here, for the reason that `uas_srtp_call.xml` states. The
+  carriage return anchors the line end, and the end-to-end flow `srtp-inbound`
+  counts the attributes, as `uas_srtp_call.xml` states.
+
+  RFC 3261 sections 13 and 15, RFC 4568 sections 5.1.2 and 6.
+-->
+<scenario name="UAC SRTP call with caller BYE">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[media_ip_type] [media_ip]
+      s=uvoice SIPp SRTP call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/SAVP 0 101
+      a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:dXZvaWNlLXNydHAtZTJlLXVhYy1vZmZlci10MDAx
+      a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:dXZvaWNlLXNydHAtZTJlLXVhYy1vZmZlci10MDAy
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true">
+    <action>
+      <ereg regexp="m=audio[[:space:]]+[1-9][0-9]*[[:space:]]+RTP/SAVP"
+            search_in="body" check_it="true" assign_to="savp_answer"/>
+      <ereg regexp="a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:[A-Za-z0-9+/]{40}\r"
+            search_in="body" check_it="true" assign_to="crypto_mirror"/>
+      <!-- exactly one attribute: the answer names the chosen tag and stops -->
+      <ereg regexp="a=crypto:2" search_in="body" check_it_inverse="true"
+            assign_to="crypto_no_second"/>
+    </action>
+  </recv>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="5000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+
+  <Reference variables="savp_answer,crypto_mirror,crypto_no_second"/>
+</scenario>

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  The DUT takes an unsolicited message-summary NOTIFY into its status, and
+  refuses an event package that it does not serve.
+
+  This peer registers the DUT with a 3600-second binding. It then sends a
+  NOTIFY of the message-summary event outside any dialog and any subscription,
+  which is the path that every shipped switch uses. The body reads
+  `Messages-Waiting: yes` and `Voice-Message: 2/1`, and the DUT must answer
+  200.
+
+  A second NOTIFY (`Messages-Waiting: no`, `Voice-Message: 0/0`) clears the
+  state, and the DUT answers 200 again. A third NOTIFY names the presence
+  package, which the daemon does not serve. The DUT must answer 489, not 481,
+  because a 481 would invite a subscription.
+
+  The clear follows the set with no window between them. The end-to-end flow
+  `uas_mwi_notify` therefore reads the set state from the daemon trace, and
+  polls the status for the cleared state (`mwi_notify_run()`).
+
+  RFC 3842, RFC 6665 sections 4 and 8.2.1.
+-->
+<scenario name="UAS unsolicited message waiting NOTIFY">
+  <recv request="REGISTER" timeout="60000"/>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-[pid]-register
+      [last_Call-ID:]
+      [last_CSeq:]
+      [last_Contact:]
+      Expires: 3600
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500" start_txn="notify1">
+    <![CDATA[
+      NOTIFY sip:5551000@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:mwi@[local_ip]:[local_port]>;tag=sipp-[pid]-mwi
+      To: <sip:5551000@[local_ip]:[local_port]>
+      Call-ID: [call_id]
+      CSeq: 1 NOTIFY
+      Contact: <sip:mwi@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Event: message-summary
+      Subscription-State: active
+      Content-Type: application/simple-message-summary
+      Content-Length: [len]
+
+      Messages-Waiting: yes
+      Message-Account: sip:5551000@[local_ip]
+      Voice-Message: 2/1
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="notify1" timeout="10000"/>
+
+  <!--
+    No window is held open for the harness. The clear below follows at once,
+    so the state the first NOTIFY set lives for microseconds and no poll can
+    catch it. The harness reads that half from the daemon trace instead, which
+    keeps it, and polls the status for the cleared state this scenario ends in
+    (run_e2e.sh mwi_notify_run).
+  -->
+
+  <send retrans="500" start_txn="notify2">
+    <![CDATA[
+      NOTIFY sip:5551000@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:mwi@[local_ip]:[local_port]>;tag=sipp-[pid]-mwi
+      To: <sip:5551000@[local_ip]:[local_port]>
+      Call-ID: [call_id]
+      CSeq: 2 NOTIFY
+      Contact: <sip:mwi@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Event: message-summary
+      Subscription-State: active
+      Content-Type: application/simple-message-summary
+      Content-Length: [len]
+
+      Messages-Waiting: no
+      Message-Account: sip:5551000@[local_ip]
+      Voice-Message: 0/0
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="notify2" timeout="10000"/>
+
+  <!--
+    A package this daemon does not serve. RFC 6665 section 8.2.1 answers it
+    489, which tells the switch the package is not served at all; a 481 would
+    invite a subscription instead.
+  -->
+  <send retrans="500" start_txn="notify3">
+    <![CDATA[
+      NOTIFY sip:5551000@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:mwi@[local_ip]:[local_port]>;tag=sipp-[pid]-mwi
+      To: <sip:5551000@[local_ip]:[local_port]>
+      Call-ID: [call_id]
+      CSeq: 3 NOTIFY
+      Contact: <sip:mwi@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Event: presence
+      Subscription-State: active
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="489" response_txn="notify3" timeout="10000"/>
+</scenario>

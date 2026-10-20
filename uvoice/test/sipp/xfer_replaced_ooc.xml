@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Support scenario that never runs alone: the consulted peer of the on-hook
+  consult flows `xfer-onhook` and `conf-onhook-xfer`.
+
+  It answers the second call that the DUT places by itself, and the REFER of
+  the DUT then names this leg in its Replaces. This peer, not the DUT, ends
+  that dialog. After the referred party replaced this leg at the target, the
+  network sends the BYE of the Replaces on it (RFC 5589). This scenario plays
+  that BYE. It requires the 200 of the DUT to it.
+
+  It must receive no BYE from the DUT before that BYE. The DUT keeps the
+  replaced leg alive after the 202 for exactly this BYE (`call.h`,
+  `CALL_XFER_DRAIN_MS`). A DUT that sent BYE on it would put an unexpected
+  request into the pause below and fail the scenario, which is the check.
+
+  Before its BYE, this peer re-INVITEs the leg with a sendrecv offer, and
+  requires a 200 with a sendonly answer. That is the shape that the captured
+  Asterisk 15.4.1 sends as soon as it accepts the REFER. That switch sends its
+  BYE only after a 2xx to that re-INVITE, so a 488 from the draining leg
+  leaves the call without that BYE. The 200 carries no Session-Expires,
+  because the drain refreshes nothing.
+
+  The 12000 ms pause before the re-INVITE is wall-clock time. Nothing on this
+  dialog tells the peer when the transfer happened: the REFER and its 202 use
+  the other leg.
+
+  The pause covers the conference flow, whose peer holds and resumes the
+  conference from the far end before the on-hook, with margin. The main
+  scenario of each flow holds its own call open past this point. SIPp leaves
+  when the calls that it was asked for are done. A leaving SIPp ends an open
+  instance with a BYE of its own, which this scenario never sent. The DUT
+  reaches IDLE at the on-hook whatever this peer does, so this peer does not
+  stretch the waits of the harness.
+
+  It rings for 2500 ms first, for the reason that `xfer_peer_ooc.xml` gives.
+  Its tag `sipp-peer-tag` is a fixed string, also for the reason that
+  `xfer_peer_ooc.xml` gives. The harness checks the escaped Replaces of the
+  REFER byte for byte, and the to-tag inside it is this tag.
+
+  A REGISTER that reaches this scenario aborts its instance while it waits for
+  an INVITE. Every UAS flow relies on that absorbed-REGISTER shape
+  (`test/e2e/run_e2e.sh`, `sipp_abort_classify`).
+-->
+<scenario name="Consulted peer, answers the DUT's second call and ends it itself">
+  <recv request="INVITE" timeout="60000" rrs="true">
+    <action>
+      <ereg regexp="From:[^&lt;]*&lt;([^&gt;]+)&gt;.*;tag=([^;[:space:]]+)"
+            search_in="msg" check_it="true"
+            assign_to="from_match,remote_uri,remote_tag"/>
+      <ereg regexp="To:[^&lt;]*&lt;([^&gt;]+)&gt;"
+            search_in="msg" check_it="true"
+            assign_to="to_match,local_uri"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-peer-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="2500"/>
+
+  <send retrans="500">
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=sipp-peer-tag
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 2 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv request="ACK" timeout="10000"/>
+
+  <!-- The transfer lands on the other leg during this pause. A BYE from the
+       DUT here is the defect this scenario exists to catch. -->
+  <pause milliseconds="12000"/>
+
+  <!-- The switch's media re-INVITE on the replaced leg, sendrecv. The
+       draining leg answers 200 sendonly with no session timer. -->
+  <send retrans="500">
+    <![CDATA[
+      INVITE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-peer-tag
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      [routes]
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 2 2 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="200" timeout="10000">
+    <action>
+      <ereg regexp="a=sendonly" search_in="body" check_it="true"
+            assign_to="drain_dir"/>
+      <ereg regexp="Session-Expires" search_in="msg" check_it_inverse="true"
+            assign_to="drain_session"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-peer-tag
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <send retrans="500">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <[$local_uri]>;tag=sipp-peer-tag
+      To: <[$remote_uri]>;tag=[$remote_tag]
+      [last_Call-ID:]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" timeout="30000"/>
+
+  <Reference variables="from_match,to_match,remote_uri,remote_tag,local_uri,drain_dir,drain_session"/>
+</scenario>

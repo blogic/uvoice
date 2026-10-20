@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!--
+  uvoice - native voice stack for OpenWrt
+  Copyright (C) 2026 Adtran Inc.
+  Author: Chad Monroe <chad.monroe@adtran.com>
+
+  Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
+-->
+<!--
+  Verifies that a DUT with a G.722 codec section answers G.722 when the offer
+  lists it first, at the RFC 3551 clock of 8000.
+
+  The DUT needs a G.722 codec section (`tr104_id` 5). The offer lists G.722
+  (static payload type 9), PCMU and telephone-event, in that order. RFC 3264
+  section 6.1 makes the answer follow the offer order. A DUT that carries
+  G.722 therefore answers 9, and a DUT that does not answers 0. This scenario
+  checks the first case; `uac_g722_refused.xml` checks the second with the
+  same offer, so the two differ in the DUT configuration alone.
+
+  G.722 samples at 16 kHz, but its rtpmap rate is 8000 (RFC 3551 section
+  4.5.2). The 200 must carry payload type 9 with `G722/8000`, and the inverse
+  check refuses `G722/16000`.
+
+  RFC 3261 sections 13 and 15, RFC 3264 section 6.1, RFC 3551 section 4.5.2.
+-->
+<scenario name="UAC G.722 call answered with G.722">
+  <send retrans="500" start_txn="invite">
+    <![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      Supported: timer
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=uvoice SIPp G722 call
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 9 0 101
+      a=rtpmap:9 G722/8000
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-16
+      a=ptime:20
+      a=sendrecv
+    ]]>
+  </send>
+
+  <recv response="100" response_txn="invite" optional="true"/>
+  <recv response="180" response_txn="invite" timeout="15000"/>
+  <recv response="200" response_txn="invite" timeout="30000" rrs="true">
+    <action>
+      <ereg regexp="m=audio[[:space:]]+[1-9][0-9]*[[:space:]]+RTP/AVP[[:space:]]+9([[:space:]]|$)"
+            search_in="body" check_it="true" assign_to="audio_answer"/>
+      <ereg regexp="a=rtpmap:9 G722/8000"
+            search_in="body" check_it="true" assign_to="g722_rtpmap"/>
+      <ereg regexp="G722/16000" search_in="body" check_it_inverse="true"
+            assign_to="g722_wrong_rate"/>
+      <ereg regexp="a=rtpmap:0 PCMU" search_in="body" check_it_inverse="true"
+            assign_to="pcmu_answer"/>
+    </action>
+  </recv>
+
+  <send ack_txn="invite">
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <pause milliseconds="5000"/>
+
+  <send retrans="500" start_txn="bye">
+    <![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: SIPp <sip:sipp@[local_ip]:[local_port]>;tag=sipp-[pid]-[call_number]
+      To: DUT <sip:[service]@[remote_ip]:[remote_port]>[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>
+      Max-Forwards: 70
+      [routes]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200" response_txn="bye" timeout="10000"/>
+
+  <Reference variables="audio_answer,g722_rtpmap,g722_wrong_rate,pcmu_answer"/>
+</scenario>

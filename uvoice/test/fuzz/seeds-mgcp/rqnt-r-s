@@ -1,0 +1,8 @@
+RQNT 1202 aaln/1@rgw-2567.whatever.net MGCP 1.0 NCS 1.0
+N: ca@[192.0.2.10]:2727
+X: 0123456789AC
+R: L/hd(A, E(S(L/dl),R(L/oc, L/hu(N), D/[0-9#*T](D)))), L/hf(S,N), X/foobar(N)(epar=2)
+S: L/ci(10/14/17/26, "555 1212", "Doe, John"), L/rg(to=6000), L/vmwi(+)
+D: (0T|00T|#xxxxxxx|*xx|91xxxxxxxxxx|9011x.T)
+Q: loop,discard
+T: G/ft
