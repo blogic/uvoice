@@ -255,6 +255,10 @@ void uvoice_ubus_request_reply(struct ubus_context *ctx,
 {
 }
 
+void uvoice_ubus_notify(const char *type, struct blob_attr *msg)
+{
+}
+
 /* ------------------------------------------------- the scripted SIP table */
 
 static struct {

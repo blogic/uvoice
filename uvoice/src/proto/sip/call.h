@@ -1057,6 +1057,18 @@ void calls_refused_note(unsigned int line, struct sip_txn_env *env,
 
 struct blob_buf;
 
+/**
+ * call_codec_dump() - add the codec of the leg a UI slot names
+ * @b: the blob buffer to add to
+ * @line: the line of the leg
+ * @ui_slot: the UI slot of the leg
+ *
+ * Adds the codec and ptime keys with the words of calls_status_dump(). A slot
+ * no leg holds, or a leg without a committed session, adds nothing.
+ */
+void call_codec_dump(struct blob_buf *b, unsigned int line,
+		     unsigned int ui_slot);
+
 /* per line and per slot state for voice status and the e2e asserts */
 void calls_status_dump(struct blob_buf *b, unsigned int line);
 

@@ -9412,6 +9412,29 @@ static void refused_dump(struct blob_buf *b, unsigned int line)
 	blobmsg_close_table(b, entry);
 }
 
+/*
+ * A T.38 session negotiates no audio codec, so the name is written here rather
+ * than by sdp_codec_name(), whose vocabulary stays the audio one. The ptime key
+ * keeps its place beside it and carries the 0 an image exchange pins.
+ */
+static void codec_dump(struct blob_buf *b, const struct call *c)
+{
+	blobmsg_add_string(b, "codec",
+			   c->sdp.committed.t38 ? "t38" :
+			   sdp_codec_name((enum sdp_codec_id)
+					  c->sdp.committed.codec.id));
+	blobmsg_add_u32(b, "ptime", c->sdp.committed.ptime_ms);
+}
+
+void call_codec_dump(struct blob_buf *b, unsigned int line,
+		     unsigned int ui_slot)
+{
+	const struct call *c = leg_of_ui(line, ui_slot);
+
+	if (c && c->sdp.committed.valid)
+		codec_dump(b, c);
+}
+
 void calls_status_dump(struct blob_buf *b, unsigned int line)
 {
 	void *arr, *entry;
@@ -9458,16 +9481,7 @@ void calls_status_dump(struct blob_buf *b, unsigned int line)
 		if (c->cid_number_private)
 			blobmsg_add_u8(b, "cid_private", true);
 		if (c->sdp.committed.valid) {
-			/* A T.38 session negotiates no audio codec, so the name
-			 * is written here rather than by sdp_codec_name(), whose
-			 * vocabulary stays the audio one. The ptime key keeps
-			 * its place beside it and carries the 0 an image
-			 * exchange pins. */
-			blobmsg_add_string(b, "codec",
-					   c->sdp.committed.t38 ? "t38" :
-					   sdp_codec_name((enum sdp_codec_id)
-							  c->sdp.committed.codec.id));
-			blobmsg_add_u32(b, "ptime", c->sdp.committed.ptime_ms);
+			codec_dump(b, c);
 			blobmsg_add_string(b, "direction",
 					   sdp_dir_name((enum sdp_dir)c->sdp.committed.dir));
 			/*

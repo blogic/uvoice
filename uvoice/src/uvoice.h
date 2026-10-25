@@ -287,6 +287,7 @@ struct hal_job *job_take(uint32_t token);
 int uvoice_ubus_init(const char *socket_path);
 void uvoice_ubus_done(void);
 
+struct blob_attr;
 struct ubus_context;
 struct ubus_request_data;
 
@@ -296,6 +297,7 @@ struct ubus_request_data;
  * context, which may be down for that moment. ubus.c.
  */
 struct ubus_context *uvoice_ubus_ctx(void);
+void uvoice_ubus_notify(const char *type, struct blob_attr *msg);
 
 /* Answer a command verb with the line and the verb under "requested",
  * the reply shape of every command verb of the voice object. ubus.c. */

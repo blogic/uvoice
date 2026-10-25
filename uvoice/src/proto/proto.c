@@ -712,7 +712,18 @@ static void host_cdr_call_ended(void *ctx, unsigned int line,
 				unsigned int stream,
 				const struct proto_call_ended *info)
 {
+	uint32_t seq = cdr_call_seq(line, stream);
+	struct blob_buf b = { 0 };
+
 	cdr_call_ended(line, stream, info);
+	if (!seq || !info)
+		return;
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_u32(&b, "line", line);
+	blobmsg_add_u32(&b, "seq", seq);
+	uvoice_ubus_notify("cdr", b.head);
+	blob_buf_free(&b);
 }
 
 static void host_calltrace_call_started(void *ctx, unsigned int line,

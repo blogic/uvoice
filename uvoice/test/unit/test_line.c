@@ -1535,6 +1535,12 @@ struct ubus_context *uvoice_ubus_ctx(void)
 	return NULL;
 }
 
+void uvoice_ubus_notify(const char *type, struct blob_attr *msg)
+{
+	(void)type;
+	(void)msg;
+}
+
 void uvoice_ubus_request_reply(struct ubus_context *ctx,
 			       struct ubus_request_data *req, unsigned int line,
 			       const char *verb)

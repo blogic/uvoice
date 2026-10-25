@@ -1395,6 +1395,14 @@ struct ubus_context *uvoice_ubus_ctx(void)
 	return ubus_connected ? &conn.ctx : NULL;
 }
 
+void uvoice_ubus_notify(const char *type, struct blob_attr *msg)
+{
+	if (!ubus_connected || !voice_object.id)
+		return;
+
+	ubus_notify(&conn.ctx, &voice_object, type, msg, -1);
+}
+
 int uvoice_ubus_init(const char *socket_path)
 {
 	conn.path = socket_path;

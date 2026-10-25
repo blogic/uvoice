@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "uvoice-api-schema.json",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "uvoice ubus API",
-  "description": "Every ubus method the uvoiced daemon answers, on the voice, voice.trace, voice.calltrace and voice.stub objects (voice.stub exists on the UVOICE_HAL_STUB build only). The daemon emits no ubus events; method replies are the whole surface. The root validates one capture envelope {object, method, args, reply}; args may be absent for a NOARG method, reply may be absent for a call answered with a bare status code. Owning functions are cited per property.",
+  "description": "Every ubus method the uvoiced daemon answers, on the voice, voice.trace, voice.calltrace and voice.stub objects (voice.stub exists on the UVOICE_HAL_STUB build only). The voice object also emits the notification cdr, whose payload is $defs CdrEvent. The root validates one capture envelope {object, method, args, reply}; args may be absent for a NOARG method, reply may be absent for a call answered with a bare status code. Owning functions are cited per property.",
   "type": "object",
 
   "oneOf": [
@@ -40,6 +40,16 @@
 
   "$defs": {
 
+    "CdrEvent": {
+      "type": "object",
+      "description": "Notification cdr (proto/proto.c host_cdr_call_ended()), sent once a call record is closed and readable through method cdr under its seq.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "seq": { "$ref": "#/$defs/U32" }
+      },
+      "required": ["line", "seq"],
+      "additionalProperties": false
+    },
     "U32": {
       "type": "integer",
       "minimum": -2147483648,
