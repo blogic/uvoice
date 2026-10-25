@@ -10,7 +10,7 @@
  * udsp_stream_config, and the other is the far end that this file plays. This
  * file builds every RTP packet that a case sends byte by byte, and parses every
  * packet that the case receives byte by byte. The reference therefore never
- * shares code with rtp/rtp.c. The SRTP cases use the udsp_srtp wrapper as the
+ * shares code with rtp/rtp.c. The SRTP cases use the uvsrtp library as the
  * peer session, as test_srtp.c does.
  *
  * The backend shares its paced part with test_core.c through
@@ -53,8 +53,9 @@
 #include "../core/stream.h"
 #include "../dsp/dsp.h"
 #include "../dsp/lec.h"
-#include "../rtp/srtp.h"
 #include "../slic/fake.h"
+
+#include <uvsrtp/uvsrtp_test.h>
 
 #ifdef HAVE_OPUS
 #include <opus/opus.h>
@@ -1872,14 +1873,10 @@ static void tm_key_set(uint8_t *key, uint8_t seed)
 
 /* The far end's session is the mirror of the near end's: our transmit key is
  * its receive key (test_srtp.c pattern). */
-static bool tm_peer_srtp(struct udsp_srtp *peer, const struct udsp_media *m)
+static bool tm_peer_srtp(struct uvsrtp **peer, const struct udsp_media *m)
 {
-	struct udsp_media mirror = *m;
-
-	memcpy(mirror.srtp.key_tx, m->srtp.key_rx, sizeof(mirror.srtp.key_tx));
-	memcpy(mirror.srtp.key_rx, m->srtp.key_tx, sizeof(mirror.srtp.key_rx));
-
-	return udsp_srtp_create(peer, &mirror) == 0;
+	return uvsrtp_create(peer, (enum uvsrtp_suite)m->srtp.suite,
+			     m->srtp.key_rx, m->srtp.key_tx) == 0;
 }
 
 static void tm_srtp_case(const char *name, uint8_t suite, size_t tag)
@@ -1890,7 +1887,7 @@ static void tm_srtp_case(const char *name, uint8_t suite, size_t tag)
 	int16_t pcm[80];
 	struct eh_gate gate = { .fd = { -1, -1 } };
 	struct udsp_stream *st;
-	struct udsp_srtp peer;
+	struct uvsrtp *peer = NULL;
 	struct udsp_media m;
 	struct tm_wire w;
 	struct tm_pkt p;
@@ -1917,7 +1914,7 @@ static void tm_srtp_case(const char *name, uint8_t suite, size_t tag)
 	CHECK(n > 0);
 	if (n > 0) {
 		CHECK_UINT((size_t)n, 12u + 80u + tag);
-		CHECK(udsp_srtp_unprotect(&peer, buf, (size_t)n, sizeof(buf),
+		CHECK(uvsrtp_unprotect(peer,buf, (size_t)n, sizeof(buf),
 					  &out) == 0);
 		CHECK_UINT(out, 92);
 		CHECK(tm_rtp_parse(buf, out, &p));
@@ -1940,7 +1937,7 @@ static void tm_srtp_case(const char *name, uint8_t suite, size_t tag)
 		memcpy(buf, plain, len);
 		w.seq++;
 		w.ts += 80;
-		rc = udsp_srtp_protect(&peer, buf, len, sizeof(buf), &out);
+		rc = uvsrtp_protect(peer,buf, len, sizeof(buf), &out);
 		CHECK_UINT(rc, 0);
 		if (rc)
 			goto srtp_out;
@@ -1963,7 +1960,7 @@ static void tm_srtp_case(const char *name, uint8_t suite, size_t tag)
 srtp_out:
 	eh_gate_disarm(&gate);
 	CHECK(udsp_stream_stop(t.s, 0, 0) == UDSP_OK);
-	udsp_srtp_destroy(&peer);
+	uvsrtp_destroy(peer);
 	tm_call_close(&t, &w);
 	eh_gate_close(&gate);
 }
@@ -1972,22 +1969,23 @@ static void tm_srtp_restore_case(const char *name, bool restore_fails)
 {
 	_Alignas(uint32_t) uint8_t buf[TM_PKT_MAX];
 	uint8_t pay[80] = { 0 };
-	struct udsp_srtp peer;
-	struct udsp_srtp session;
+	struct uvsrtp *peer = NULL;
+	struct uvsrtp *session = NULL;
 	struct udsp_media media;
 	struct udsp_media next;
-	uint_least32_t fail = UDSP_SRTP_REKEY_FAIL_RX | (uint_least32_t)EIO;
+	uint_least32_t fail = UVSRTP_TEST_FAIL_RX | (uint_least32_t)EIO;
 	size_t plain_len;
 	size_t protected_len = 0;
 	size_t recovered_len = 0;
 
 	CASE(name);
-	CHECK(udsp_srtp_init() == 0);
+	CHECK(uvsrtp_init() == 0);
 	tm_media(&media, UDSP_SEL_PCMU, 0, 10);
 	media.srtp.suite = UDSP_SRTP_AES_CM_128_SHA1_80;
 	tm_key_set(media.srtp.key_tx, 0x29);
 	tm_key_set(media.srtp.key_rx, 0x61);
-	CHECK(udsp_srtp_create(&session, &media) == 0);
+	CHECK(uvsrtp_create(&session, (enum uvsrtp_suite)media.srtp.suite,
+			    media.srtp.key_tx, media.srtp.key_rx) == 0);
 	if (!restore_fails)
 		CHECK(tm_peer_srtp(&peer, &media));
 
@@ -1995,37 +1993,36 @@ static void tm_srtp_restore_case(const char *name, bool restore_fails)
 	tm_key_set(next.srtp.key_tx, 0x73);
 	tm_key_set(next.srtp.key_rx, 0x17);
 	if (restore_fails)
-		fail |= UDSP_SRTP_REKEY_FAIL_RESTORE;
-	atomic_store(&session.rekey_fail, fail);
-	CHECK(udsp_srtp_rekey(&session, &next) == -EIO);
+		fail |= UVSRTP_TEST_FAIL_RESTORE;
+	uvsrtp_test_fault_set(session, fail);
+	CHECK(uvsrtp_rekey(session, (enum uvsrtp_suite)next.srtp.suite,
+			   next.srtp.key_tx, next.srtp.key_rx) == -EIO);
 
 	plain_len = tm_rtp_build(buf, 0, true, 9100, 810000,
 				 0x19375571u, pay, sizeof(pay));
 	if (restore_fails) {
-		CHECK(session.tx == NULL);
-		CHECK(session.rx == NULL);
-		CHECK(udsp_srtp_protect(&session, buf, plain_len, sizeof(buf),
-					&protected_len) == -EINVAL);
+		CHECK(uvsrtp_test_sessions_cleared(session));
+		CHECK(uvsrtp_protect(session, buf, plain_len, sizeof(buf),
+				     &protected_len) == -EINVAL);
 	} else {
-		CHECK(session.tx != NULL);
-		CHECK(session.rx != NULL);
-		CHECK_UINT(atomic_load(&session.rekey_fail), 0);
-		CHECK(udsp_srtp_protect(&session, buf, plain_len, sizeof(buf),
+		CHECK(!uvsrtp_test_sessions_cleared(session));
+		CHECK_UINT(uvsrtp_test_fault_get(session), 0);
+		CHECK(uvsrtp_protect(session,buf, plain_len, sizeof(buf),
 					&protected_len) == 0);
-		CHECK(udsp_srtp_unprotect(&peer, buf, protected_len, sizeof(buf),
+		CHECK(uvsrtp_unprotect(peer,buf, protected_len, sizeof(buf),
 					  &recovered_len) == 0);
 		CHECK_UINT(recovered_len, plain_len);
 
 		plain_len = tm_rtp_build(buf, 0, false, 9101, 810080,
 					 0x19375571u, pay, sizeof(pay));
-		CHECK(udsp_srtp_protect(&peer, buf, plain_len, sizeof(buf),
+		CHECK(uvsrtp_protect(peer,buf, plain_len, sizeof(buf),
 					&protected_len) == 0);
-		CHECK(udsp_srtp_unprotect(&session, buf, protected_len,
+		CHECK(uvsrtp_unprotect(session,buf, protected_len,
 					  sizeof(buf), &recovered_len) == 0);
 		CHECK_UINT(recovered_len, plain_len);
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 	}
-	udsp_srtp_destroy(&session);
+	uvsrtp_destroy(session);
 }
 
 static void case_srtp(void)
@@ -2036,21 +2033,23 @@ static void case_srtp(void)
 		     UDSP_SRTP_AES_CM_128_SHA1_32, 4);
 
 	{
-		struct udsp_srtp session;
+		struct uvsrtp *session = NULL;
 		struct udsp_media m;
 
 		CASE("the SRTP fault injection preserves the same-key no-op");
-		CHECK(udsp_srtp_init() == 0);
+		CHECK(uvsrtp_init() == 0);
 		tm_media(&m, UDSP_SEL_PCMU, 0, 10);
 		m.srtp.suite = UDSP_SRTP_AES_CM_128_SHA1_80;
 		tm_key_set(m.srtp.key_tx, 0x36);
 		tm_key_set(m.srtp.key_rx, 0x69);
-		CHECK(udsp_srtp_create(&session, &m) == 0);
-		atomic_store(&session.rekey_fail, (uint_least32_t)ENOMEM);
-		CHECK(udsp_srtp_rekey(&session, &m) == 0);
-		CHECK_UINT(atomic_load(&session.rekey_fail), ENOMEM);
-		atomic_store(&session.rekey_fail, 0u);
-		udsp_srtp_destroy(&session);
+		CHECK(uvsrtp_create(&session, (enum uvsrtp_suite)m.srtp.suite,
+				    m.srtp.key_tx, m.srtp.key_rx) == 0);
+		uvsrtp_test_fault_set(session, (uint_least32_t)ENOMEM);
+		CHECK(uvsrtp_rekey(session, (enum uvsrtp_suite)m.srtp.suite,
+				   m.srtp.key_tx, m.srtp.key_rx) == 0);
+		CHECK_UINT(uvsrtp_test_fault_get(session), ENOMEM);
+		uvsrtp_test_fault_set(session, 0u);
+		uvsrtp_destroy(session);
 	}
 
 	tm_srtp_restore_case(
@@ -2064,7 +2063,7 @@ static void case_srtp(void)
 		uint8_t replay[TM_PKT_MAX];
 		uint8_t pay[80] = { 0 };
 		struct udsp_media_stats stats;
-		struct udsp_srtp peer;
+		struct uvsrtp *peer = NULL;
 		struct udsp_media m;
 		struct tm_wire w;
 		struct eh t;
@@ -2085,11 +2084,11 @@ static void case_srtp(void)
 		/* RFC 3550 A.1 holds a new source's first packet until the
 		 * second sequential packet proves the source; both count. */
 		len = tm_rtp_build(buf, 0, true, w.seq++, w.ts, w.ssrc, pay, 80);
-		CHECK(udsp_srtp_protect(&peer, buf, len, sizeof(buf), &out) == 0);
+		CHECK(uvsrtp_protect(peer,buf, len, sizeof(buf), &out) == 0);
 		CHECK(send(w.rtp_peer, buf, out, MSG_DONTWAIT | MSG_NOSIGNAL) > 0);
 		w.ts += 80;
 		len = tm_rtp_build(buf, 0, false, w.seq++, w.ts, w.ssrc, pay, 80);
-		CHECK(udsp_srtp_protect(&peer, buf, len, sizeof(buf), &out) == 0);
+		CHECK(uvsrtp_protect(peer,buf, len, sizeof(buf), &out) == 0);
 		memcpy(replay, buf, out);
 		CHECK(send(w.rtp_peer, buf, out, MSG_DONTWAIT | MSG_NOSIGNAL) > 0);
 		eh_wait_ms(&t, 200);
@@ -2108,7 +2107,7 @@ static void case_srtp(void)
 		CHECK(udsp_stream_stats(t.s, 0, 0, &stats) == UDSP_OK);
 		CHECK_UINT(stats.packets_recv, 2);
 		CHECK(udsp_stream_stop(t.s, 0, 0) == UDSP_OK);
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 		tm_call_close(&t, &w);
 	}
 
@@ -2116,7 +2115,7 @@ static void case_srtp(void)
 		_Alignas(uint32_t) uint8_t buf[TM_PKT_MAX];
 		uint8_t pay[80] = { 0 };
 		struct udsp_media_stats stats;
-		struct udsp_srtp peer;
+		struct uvsrtp *peer = NULL;
 		struct udsp_media m;
 		struct udsp_stream *st;
 		struct tm_wire w;
@@ -2145,7 +2144,7 @@ static void case_srtp(void)
 			len = tm_rtp_build(buf, 0, !i, (uint16_t)(9000 + i),
 					   900000u + i * 80u, 0x77aa11bbu, pay,
 					   80);
-			CHECK(udsp_srtp_protect(&peer, buf, len, sizeof(buf),
+			CHECK(uvsrtp_protect(peer,buf, len, sizeof(buf),
 						&out) == 0);
 			CHECK(send(w.rtp_peer, buf, out,
 				   MSG_DONTWAIT | MSG_NOSIGNAL) > 0);
@@ -2162,10 +2161,10 @@ static void case_srtp(void)
 			/* stream_stop zeroizes the key material it kept. */
 			CHECK(!memcmp(st->media.srtp.key_tx, zero, sizeof(zero)));
 			CHECK(!memcmp(st->media.srtp.key_rx, zero, sizeof(zero)));
-			CHECK(!memcmp(st->srtp.key_tx, zero, sizeof(zero)));
+			CHECK(st->srtp == NULL);
 			CHECK_UINT(st->media.srtp.suite, UDSP_SRTP_NONE);
 		}
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 		tm_call_close(&t, &w);
 	}
 
@@ -2202,10 +2201,10 @@ static void case_srtp(void)
 		next.codec_pt = 8;
 		tm_key_set(next.srtp.key_tx, 0x75);
 		tm_key_set(next.srtp.key_rx, 0x19);
-		atomic_store(&st->srtp.rekey_fail, (uint_least32_t)ENOMEM);
+		uvsrtp_test_fault_set(st->srtp, (uint_least32_t)ENOMEM);
 		CHECK(udsp_stream_config(t.s, 0, 0, &next, w.rtp_local,
 					 w.rtcp_local) == UDSP_TRANSIENT);
-		CHECK_UINT(atomic_load(&st->srtp.rekey_fail), 0);
+		CHECK_UINT(uvsrtp_test_fault_get(st->srtp), 0);
 		CHECK_UINT(atomic_load(&st->state), STREAM_READY);
 		CHECK(!atomic_load(&st->dead));
 		CHECK(st->srtp_live);
@@ -2215,7 +2214,7 @@ static void case_srtp(void)
 		CHECK_UINT(st->media.codec, UDSP_SEL_PCMU);
 		CHECK(!memcmp(st->media.srtp.key_tx, m.srtp.key_tx,
 			      sizeof(m.srtp.key_tx)));
-		CHECK(!memcmp(st->srtp.key_tx, m.srtp.key_tx,
+		CHECK(!memcmp(uvsrtp_test_key_tx(st->srtp), m.srtp.key_tx,
 			      sizeof(m.srtp.key_tx)));
 
 		tm_stream_config(&t, &w, &next);
@@ -2228,7 +2227,7 @@ static void case_srtp(void)
 		const struct udsp_codec_ops *old_ops;
 		struct udsp_codec *old_enc;
 		struct udsp_codec *old_dec;
-		struct udsp_srtp peer;
+		struct uvsrtp *peer = NULL;
 		struct udsp_media next;
 		struct udsp_media media;
 		struct udsp_stream *st;
@@ -2251,7 +2250,7 @@ static void case_srtp(void)
 		st = stream_at(t.s, 0, 0);
 		CHECK(st != NULL);
 		if (!st) {
-			udsp_srtp_destroy(&peer);
+			uvsrtp_destroy(peer);
 			tm_call_close(&t, &w);
 			return;
 		}
@@ -2267,8 +2266,8 @@ static void case_srtp(void)
 		next.codec_pt = 8;
 		tm_key_set(next.srtp.key_tx, 0x92);
 		tm_key_set(next.srtp.key_rx, 0x1d);
-		atomic_store(&st->srtp.rekey_fail,
-			     UDSP_SRTP_REKEY_FAIL_RX | (uint_least32_t)EIO);
+		uvsrtp_test_fault_set(st->srtp,
+			     UVSRTP_TEST_FAIL_RX | (uint_least32_t)EIO);
 		CHECK(udsp_stream_config(t.s, 0, 0, &next, w.rtp_local,
 					 w.rtcp_local) == UDSP_TRANSIENT);
 		CHECK_UINT(atomic_load(&st->state), STREAM_RUNNING);
@@ -2284,7 +2283,7 @@ static void case_srtp(void)
 		protected_len = tm_recv_wait(&t, w.rtp_peer, buf, sizeof(buf), 300);
 		CHECK(protected_len > 0);
 		if (protected_len > 0) {
-			CHECK(udsp_srtp_unprotect(&peer, buf,
+			CHECK(uvsrtp_unprotect(peer,buf,
 						  (size_t)protected_len, sizeof(buf),
 						  &plain_len) == 0);
 			CHECK_UINT(plain_len, 92);
@@ -2295,7 +2294,7 @@ static void case_srtp(void)
 		CHECK(!atomic_load(&st->dead));
 		CHECK_UINT(st->media.codec, UDSP_SEL_PCMA);
 		CHECK(udsp_stream_stop(t.s, 0, 0) == UDSP_OK);
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 		tm_call_close(&t, &w);
 	}
 
@@ -2309,7 +2308,7 @@ static void case_srtp(void)
 		_Alignas(uint32_t) uint8_t buf[TM_PKT_MAX];
 		uint8_t pay[80] = { 0 };
 		struct udsp_media_stats stats;
-		struct udsp_srtp peer;
+		struct uvsrtp *peer = NULL;
 		struct udsp_media m;
 		struct rlimit rl, saved;
 		struct tm_wire w;
@@ -2335,7 +2334,7 @@ static void case_srtp(void)
 			len = tm_rtp_build(buf, 0, !i, w.seq++, w.ts, w.ssrc,
 					   pay, 80);
 			w.ts += 80;
-			CHECK(udsp_srtp_protect(&peer, buf, len, sizeof(buf),
+			CHECK(uvsrtp_protect(peer,buf, len, sizeof(buf),
 						&out) == 0);
 			CHECK(send(w.rtp_peer, buf, out,
 				   MSG_DONTWAIT | MSG_NOSIGNAL) > 0);
@@ -2366,7 +2365,7 @@ static void case_srtp(void)
 			len = tm_rtp_build(buf, 0, false, w.seq++, w.ts, w.ssrc,
 					   pay, 80);
 			w.ts += 80;
-			CHECK(udsp_srtp_protect(&peer, buf, len, sizeof(buf),
+			CHECK(uvsrtp_protect(peer,buf, len, sizeof(buf),
 						&out) == 0);
 			CHECK(send(w.rtp_peer, buf, out,
 				   MSG_DONTWAIT | MSG_NOSIGNAL) > 0);
@@ -2375,7 +2374,7 @@ static void case_srtp(void)
 		CHECK(udsp_stream_stats(t.s, 0, 0, &stats) == UDSP_OK);
 		CHECK_UINT(stats.packets_recv, 4);
 		CHECK(udsp_stream_stop(t.s, 0, 0) == UDSP_OK);
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 		tm_call_close(&t, &w);
 	}
 
@@ -2387,7 +2386,7 @@ static void case_srtp(void)
 	 */
 	{
 		_Alignas(uint32_t) uint8_t buf[TM_PKT_MAX];
-		struct udsp_srtp peer;
+		struct uvsrtp *peer = NULL;
 		struct udsp_media m;
 		struct tm_wire w;
 		struct eh t;
@@ -2416,13 +2415,13 @@ static void case_srtp(void)
 			/* Plain RTCP would parse straight away; this must not. */
 			CHECK(!tm_rtcp_walk(buf, (size_t)n, types, 8, &count) ||
 			      count < 3u);
-			CHECK(udsp_srtp_unprotect_rtcp(&peer, buf, (size_t)n,
+			CHECK(uvsrtp_unprotect_rtcp(peer,buf, (size_t)n,
 						       sizeof(buf), &out) == 0);
 			CHECK(tm_rtcp_walk(buf, out, types, 8, &count));
 			CHECK_UINT(count, 3);
 			CHECK_UINT(types[2], 203);	/* goodbye */
 		}
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 		tm_call_close(&t, &w);
 	}
 }
@@ -9595,7 +9594,7 @@ static void case_quiesce(void)
 		/* The key bytes never outlive the failed configuration. */
 		CHECK(!memcmp(st->media.srtp.key_tx, zero, sizeof(zero)));
 		CHECK(!memcmp(st->media.srtp.key_rx, zero, sizeof(zero)));
-		CHECK(!memcmp(st->srtp.key_tx, zero, sizeof(zero)));
+		CHECK(st->srtp == NULL);
 		CHECK_UINT(st->media.srtp.suite, UDSP_SRTP_NONE);
 
 		/* A clean IDLE stream is reusable, which is the whole point of
@@ -18108,7 +18107,7 @@ static void case_pkt_trace(void)
 	{
 		_Alignas(uint32_t) uint8_t buf[TM_PKT_MAX];
 		struct tm_pkt_scan sc;
-		struct udsp_srtp peer;
+		struct uvsrtp *peer = NULL;
 		size_t out = 0;
 		ssize_t n;
 
@@ -18128,7 +18127,7 @@ static void case_pkt_trace(void)
 		 * must not. */
 		CHECK_UINT((size_t)n, 12u + 80u + 10u);
 		if (n > 0)
-			CHECK(udsp_srtp_unprotect(&peer, buf, (size_t)n,
+			CHECK(uvsrtp_unprotect(peer,buf, (size_t)n,
 						  sizeof(buf), &out) == 0);
 		CHECK_UINT(out, 92);
 
@@ -18140,7 +18139,7 @@ static void case_pkt_trace(void)
 		if (sc.have)
 			CHECK_UINT(sc.first.len, 92);
 		CHECK(udsp_stream_stop(t.s, 0, 0) == UDSP_OK);
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 		tm_call_close(&t, &w);
 	}
 
@@ -18655,7 +18654,7 @@ static void case_pkt_trace(void)
 		int16_t pcm[80];
 		struct tm_pkt_scan sc;
 		struct udsp_stream *st;
-		struct udsp_srtp peer;
+		struct uvsrtp *peer = NULL;
 		unsigned head;
 		size_t out = 0;
 		size_t len;
@@ -18673,7 +18672,7 @@ static void case_pkt_trace(void)
 		st = stream_at(t.s, 0, 0);
 		CHECK(st != NULL);
 		if (!st) {
-			udsp_srtp_destroy(&peer);
+			uvsrtp_destroy(peer);
 			tm_call_close(&t, &w);
 			return;
 		}
@@ -18682,7 +18681,7 @@ static void case_pkt_trace(void)
 		len = tm_rtp_build(plain, 0, false, w.seq, w.ts, w.ssrc, pay,
 				   80);
 		memcpy(buf, plain, len);
-		CHECK(udsp_srtp_protect(&peer, buf, len, sizeof(buf),
+		CHECK(uvsrtp_protect(peer,buf, len, sizeof(buf),
 					&out) == 0);
 		/* The wire carries the authentication tag, the record must
 		 * not: the net thread unprotects in place before the tap. */
@@ -18701,7 +18700,7 @@ static void case_pkt_trace(void)
 		if (sc.have)
 			CHECK_UINT(sc.first.len, len);
 		CHECK(udsp_stream_stop(t.s, 0, 0) == UDSP_OK);
-		udsp_srtp_destroy(&peer);
+		uvsrtp_destroy(peer);
 		tm_call_close(&t, &w);
 	}
 
@@ -18908,7 +18907,7 @@ static void case_stream_diag_srtp(void)
 	struct eh_gate gate = { .fd = { -1, -1 } };
 	struct udsp_stream_diag before, after;
 	struct udsp_stream *st;
-	struct udsp_srtp peer;
+	struct uvsrtp *peer = NULL;
 	struct udsp_media media;
 	struct tm_wire wire;
 	struct eh t;
@@ -18940,11 +18939,11 @@ static void case_stream_diag_srtp(void)
 	received = tm_recv(wire.rtp_peer, packet, sizeof(packet));
 	CHECK(received > 0);
 	if (received > 0)
-		CHECK(udsp_srtp_unprotect(&peer, packet, (size_t)received,
+		CHECK(uvsrtp_unprotect(peer,packet, (size_t)received,
 					  sizeof(packet), &decoded) == 0);
 	len = tm_rtp_build(packet, 0, true, wire.seq++, wire.ts, wire.ssrc,
 			    payload, sizeof(payload));
-	CHECK(udsp_srtp_protect(&peer, packet, len, sizeof(packet),
+	CHECK(uvsrtp_protect(peer,packet, len, sizeof(packet),
 				&encrypted) == 0);
 	memcpy(replay, packet, encrypted);
 	head = tm_pkt_ring_head(st);
@@ -18957,7 +18956,7 @@ static void case_stream_diag_srtp(void)
 	CASE("stream diagnostics count SRTP authentication failures");
 	len = tm_rtp_build(packet, 0, false, wire.seq++, wire.ts + 80,
 			    wire.ssrc, payload, sizeof(payload));
-	CHECK(udsp_srtp_protect(&peer, packet, len, sizeof(packet),
+	CHECK(uvsrtp_protect(peer,packet, len, sizeof(packet),
 				&encrypted) == 0);
 	packet[encrypted - 1] ^= 1;
 	head = tm_pkt_ring_head(st);
@@ -18986,7 +18985,7 @@ static void case_stream_diag_srtp(void)
 	len = tm_rtp_build(packet, 0, false, 1, 80, 0x17171717,
 			    payload, sizeof(payload));
 	for (unsigned i = 0; i < 2; i++)
-		CHECK(udsp_srtp_protect(&st->srtp, packet, len, len,
+		CHECK(uvsrtp_protect(st->srtp,packet, len, len,
 					&encrypted) == -EMSGSIZE);
 	CHECK(udsp_stream_diag(t.s, 0, 0, &after) == UDSP_OK);
 	CHECK_UINT(before.srtp_protect_fail, 0);
@@ -18996,7 +18995,7 @@ static void case_stream_diag_srtp(void)
 out:
 	eh_gate_disarm(&gate);
 	CHECK(udsp_stream_stop(t.s, 0, 0) == UDSP_OK);
-	udsp_srtp_destroy(&peer);
+	uvsrtp_destroy(peer);
 	tm_call_close(&t, &wire);
 	eh_gate_close(&gate);
 }

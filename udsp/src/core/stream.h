@@ -9,7 +9,7 @@
  *
  *   net thread     fills the SPSC ring below and nothing else. It recvs, stamps
  *                  CLOCK_MONOTONIC and unprotects SRTP in place on the receive
- *                  session, which srtp.h reserves for it.
+ *                  session, which uvsrtp.h reserves for it.
  *   engine tick    owns every byte of RTP, RTCP, telephone-event, jitter buffer
  *                  and codec state. rtp_packet_parse and rtp_receiver_report
  *                  both mutate struct rtp_receiver and rtp_stats is read whole
@@ -39,7 +39,8 @@
 #include "../dsp/resamp.h"
 #include "../rtp/jb.h"
 #include "../rtp/rtp.h"
-#include "../rtp/srtp.h"
+
+#include <uvsrtp/uvsrtp.h>
 
 #include "snap.h"
 
@@ -51,7 +52,7 @@
 /* At most this many slots per stream per tick reach the parser; the rest of a
  * burst is the oldest audio and is dropped and counted. */
 #define UDSP_NET_DRAIN_MAX	16u
-/* srtp.h: protect needs len + SRTP_MAX_SRTCP_TRAILER_LEN (148 bytes) of
+/* uvsrtp.h: protect needs len + UVSRTP_MAX_SRTCP_TRAILER (148 bytes) of
  * headroom and a 32-bit aligned start. */
 #define UDSP_PKT_CAP		(UDSP_NET_DGRAM_MAX + 160u)
 /* The transmit staging. codec.h bounds every codec's max_payload by
@@ -213,7 +214,7 @@ struct udsp_stream {
 	struct udsp_codec_params params;
 	struct udsp_codec *enc;
 	struct udsp_codec *dec;
-	struct udsp_srtp srtp;
+	struct uvsrtp *srtp;
 	bool srtp_live;			/* control thread: an object exists */
 	int rtp_fd;			/* libudsp's dup, -1 when none */
 	int rtcp_fd;
@@ -221,7 +222,7 @@ struct udsp_stream {
 	char cname[UDSP_CNAME_MAX];
 
 	/* Read by the net thread and by the engine, written by the control
-	 * thread only while both are quiesced (srtp.h thread contract). */
+	 * thread only while both are quiesced (uvsrtp.h thread contract). */
 	_Atomic bool srtp_armed;
 	_Atomic bool active;
 

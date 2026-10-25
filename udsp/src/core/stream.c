@@ -750,14 +750,18 @@ static int stream_srtp_set(struct udsp_stream *st, const struct udsp_media *m)
 
 	if (m->srtp.suite == UDSP_SRTP_NONE) {
 		if (st->srtp_live)
-			udsp_srtp_destroy(&st->srtp);
+			uvsrtp_destroy(st->srtp);
+		st->srtp = NULL;
 		st->srtp_live = false;
 		atomic_store_explicit(&st->srtp_armed, false,
 				      memory_order_release);
 		return 0;
 	}
-	rc = st->srtp_live ? udsp_srtp_rekey(&st->srtp, m) :
-			     udsp_srtp_create(&st->srtp, m);
+	rc = st->srtp_live ?
+		uvsrtp_rekey(st->srtp, (enum uvsrtp_suite)m->srtp.suite,
+			     m->srtp.key_tx, m->srtp.key_rx) :
+		uvsrtp_create(&st->srtp, (enum uvsrtp_suite)m->srtp.suite,
+			      m->srtp.key_tx, m->srtp.key_rx);
 	if (rc)
 		return rc;
 	st->srtp_live = true;
@@ -1004,7 +1008,8 @@ static void stream_teardown(struct udsp *s, struct udsp_stream *st)
 	fd_drop(&st->rtcp_fd);
 	atomic_store_explicit(&st->srtp_armed, false, memory_order_release);
 	if (st->srtp_live)
-		udsp_srtp_destroy(&st->srtp);
+		uvsrtp_destroy(st->srtp);
+	st->srtp = NULL;
 	st->srtp_live = false;
 	stream_codec_drop(st);
 	stream_fax_drop(st);
@@ -1587,16 +1592,15 @@ enum udsp_status stream_diag(struct udsp *s, unsigned line, unsigned stream,
 					   memory_order_relaxed);
 	out->punch_sent = atomic_load_explicit(&st->punch_sent,
 					      memory_order_relaxed);
-	out->srtp_protect_ok = atomic_load_explicit(
-		&st->srtp.stats.protect_ok, memory_order_relaxed);
-	out->srtp_protect_fail = atomic_load_explicit(
-		&st->srtp.stats.protect_errors, memory_order_relaxed);
-	out->srtp_unprotect_ok = atomic_load_explicit(
-		&st->srtp.stats.unprotect_ok, memory_order_relaxed);
-	out->srtp_unprotect_auth_fail = atomic_load_explicit(
-		&st->srtp.stats.unprotect_auth_fail, memory_order_relaxed);
-	out->srtp_unprotect_replay = atomic_load_explicit(
-		&st->srtp.stats.unprotect_replay, memory_order_relaxed);
+	struct uvsrtp_stats srtp_stats = { 0 };
+
+	if (st->srtp)
+		uvsrtp_stats_get(st->srtp, &srtp_stats);
+	out->srtp_protect_ok = srtp_stats.protect_ok;
+	out->srtp_protect_fail = srtp_stats.protect_fail;
+	out->srtp_unprotect_ok = srtp_stats.unprotect_ok;
+	out->srtp_unprotect_auth_fail = srtp_stats.unprotect_auth_fail;
+	out->srtp_unprotect_replay = srtp_stats.unprotect_replay;
 
 	return UDSP_OK;
 }
@@ -1982,10 +1986,10 @@ static bool stream_protect(struct udsp_stream *st, size_t *len, bool rtcp)
 	if (!atomic_load_explicit(&st->srtp_armed, memory_order_acquire))
 		return true;
 
-	rc = rtcp ? udsp_srtp_protect_rtcp(&st->srtp, st->pkt, *len,
-					   sizeof(st->pkt), &out) :
-		    udsp_srtp_protect(&st->srtp, st->pkt, *len, sizeof(st->pkt),
-				      &out);
+	rc = rtcp ? uvsrtp_protect_rtcp(st->srtp, st->pkt, *len,
+					sizeof(st->pkt), &out) :
+		    uvsrtp_protect(st->srtp, st->pkt, *len, sizeof(st->pkt),
+				   &out);
 	if (rc)
 		return false;
 	*len = out;

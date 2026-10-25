@@ -12,7 +12,7 @@ PKG_LICENSE:=LGPL-2.1-only BSD-2-Clause
 PKG_LICENSE_FILES:=LICENSE LICENSES/BSD-2-Clause.txt
 PKG_MAINTAINER:=Chad Monroe <chad.monroe@adtran.com>
 
-PKG_BUILD_DEPENDS:=alsa-lib libsrtp2 UDSP_OPUS:libopus
+PKG_BUILD_DEPENDS:=alsa-lib libsrtp2 uvsrtp UDSP_OPUS:libopus
 CMAKE_INSTALL:=1
 # Every config symbol CMAKE_OPTIONS or DEPENDS reads, so a change of one
 # reconfigures the package.
@@ -44,7 +44,7 @@ define Package/libudsp
   CATEGORY:=Network
   SUBMENU:=Telephony
   TITLE:=udsp software voice DSP for FXS lines
-  DEPENDS:=+alsa-lib +libsrtp2 +UDSP_OPUS:libopus
+  DEPENDS:=+alsa-lib +libsrtp2 +libuvsrtp +UDSP_OPUS:libopus
   ABI_VERSION:=$(PKG_VERSION)
 endef
 

@@ -2335,9 +2335,9 @@ udsp_t *udsp_open(const struct udsp_config *cfg, int event_fd)
 
 	/* libsrtp initialises once per process and yields while it runs, so it
 	 * belongs on the control thread before any stream can ask for a session
-	 * (rtp/srtp.c). A failure only costs the SRTP capability: a stream that
+	 * (libuvsrtp). A failure only costs the SRTP capability: a stream that
 	 * asks for a suite is then refused, and one that does not still runs. */
-	s->srtp_ready = udsp_srtp_init() == 0;
+	s->srtp_ready = uvsrtp_init() == 0;
 	/* The emitter writes libudsp's own descriptor from here on. */
 	s->event_dup = fcntl(event_fd, F_DUPFD_CLOEXEC, 0);
 	if (s->event_dup < 0) {

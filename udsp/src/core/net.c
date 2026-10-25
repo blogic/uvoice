@@ -79,11 +79,11 @@ static void net_slot_fill(struct udsp_stream *st, struct net_slot *slot,
 	}
 
 	if (kind == NET_KIND_RTCP)
-		rc = udsp_srtp_unprotect_rtcp(&st->srtp, slot->data, len,
-					      sizeof(slot->data), &out);
+		rc = uvsrtp_unprotect_rtcp(st->srtp, slot->data, len,
+					   sizeof(slot->data), &out);
 	else
-		rc = udsp_srtp_unprotect(&st->srtp, slot->data, len,
-					 sizeof(slot->data), &out);
+		rc = uvsrtp_unprotect(st->srtp, slot->data, len,
+				      sizeof(slot->data), &out);
 	if (rc) {
 		net_count(&st->net_trunc, 1u);
 		slot->len = 0;

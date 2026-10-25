@@ -654,6 +654,18 @@ if(UVOICE_TESTS)
 		  HINTS ${UVOICE_UDSP_SRCDIR}
 			${CMAKE_CURRENT_SOURCE_DIR}/../../udsp/src
 		  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+	# libudsp's SRTP layer moved into libuvsrtp, compiled into the target from
+	# its source tree the way the udsp sources are.
+	find_path(UVSRTP_SRC_DIR uvsrtp.c
+		  HINTS ${UVOICE_UVSRTP_SRCDIR}
+			${CMAKE_CURRENT_SOURCE_DIR}/../../uvsrtp/src
+		  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+
+	if(UDSP_TEST_SRC_DIR AND NOT UVSRTP_SRC_DIR)
+		message(FATAL_ERROR
+			"test_hal_udsp needs the libuvsrtp source tree; set "
+			"-DUVOICE_UVSRTP_SRCDIR=<uvsrtp/src> or keep it beside udsp/")
+	endif()
 
 	if(UDSP_TEST_SRC_DIR)
 		find_package(PkgConfig REQUIRED)
@@ -674,7 +686,7 @@ if(UVOICE_TESTS)
 		    dsp/gain.c dsp/fsk_mod.c dsp/cid.c dsp/fax_det.c dsp/lec.c
 		    dsp/mix.c dsp/resamp.c dsp/g722.c dsp/plc.c dsp/g729.c
 		    dsp/g729_tables.c
-		    rtp/rtp.c rtp/rtcp.c rtp/telev.c rtp/stats.c rtp/jb.c rtp/srtp.c
+		    rtp/rtp.c rtp/rtcp.c rtp/telev.c rtp/stats.c rtp/jb.c
 		    line/hook.c line/ring.c line/cidseq.c line/region.c)
 		# The ALSA backend of the library, on the same probe its own
 		# CMake uses, so this target compiles what the shipped libudsp
@@ -690,12 +702,14 @@ if(UVOICE_TESTS)
 		add_executable(test_hal_udsp ${UVOICE_TEST_DIR}/unit/test_hal_udsp.c
 			       hal/udsp/udsp.c hal/udsp/udsp_events.c
 			       cfg/uci.c dialplan.c trace.c trace_ring.c pcapng.c
+			       ${UVSRTP_SRC_DIR}/uvsrtp.c
 			       ${UDSP_TEST_SRC})
 		target_include_directories(test_hal_udsp PRIVATE
 					   ${UVOICE_TEST_DIR}/unit
 					   ${CMAKE_CURRENT_SOURCE_DIR}
 					   ${UBOX_INCLUDE_DIR} ${UCI_INCLUDE_DIR}
 					   ${UDSP_TEST_SRC_DIR}/include
+					   ${UVSRTP_SRC_DIR}/include
 					   ${UDSP_TEST_SRC_DIR}
 					   ${UDSP_TEST_SRC_DIR}/core
 					   ${UDSP_TEST_SRC_DIR}/dsp

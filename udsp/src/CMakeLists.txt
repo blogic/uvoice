@@ -60,13 +60,28 @@ set(UDSP_DSP_SRC dsp/g711.c dsp/g726.c dsp/cn.c dsp/vad.c
     dsp/resamp.c
     dsp/g722.c dsp/plc.c
     dsp/g729.c dsp/g729_tables.c)
-set(UDSP_RTP_SRC rtp/rtp.c rtp/rtcp.c rtp/telev.c rtp/stats.c rtp/jb.c
-    rtp/srtp.c)
+set(UDSP_RTP_SRC rtp/rtp.c rtp/rtcp.c rtp/telev.c rtp/stats.c rtp/jb.c)
 
 # libsrtp2 is a hard dependency of the library (a silent no-SRTP libudsp is
 # forbidden), so the probe is REQUIRED.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SRTP2 REQUIRED IMPORTED_TARGET libsrtp2)
+
+# The SRTP layer lives in libuvsrtp. Prefer an installed one (a buildroot stages
+# it); on a bare host build it from the sibling source tree so the suites run
+# without an install.
+pkg_check_modules(UVSRTP IMPORTED_TARGET uvsrtp)
+if(UVSRTP_FOUND)
+	set(UVSRTP_LINK PkgConfig::UVSRTP)
+else()
+	set(UVSRTP_SRCDIR "${CMAKE_CURRENT_SOURCE_DIR}/../../uvsrtp/src"
+	    CACHE PATH "libuvsrtp source tree for a host build")
+	if(NOT EXISTS "${UVSRTP_SRCDIR}/CMakeLists.txt")
+		message(FATAL_ERROR "libuvsrtp not found via pkg-config and no source tree at ${UVSRTP_SRCDIR}")
+	endif()
+	add_subdirectory(${UVSRTP_SRCDIR} uvsrtp_build)
+	set(UVSRTP_LINK uvsrtp)
+endif()
 
 # The Opus codec is optional. ON requires libopus, OFF
 # skips it, AUTO probes: the package Makefile passes ON or OFF from
@@ -101,7 +116,7 @@ set_target_properties(udsp PROPERTIES VERSION ${UDSP_VERSION}
 		      SOVERSION ${UDSP_VERSION})
 install(TARGETS udsp LIBRARY DESTINATION lib)
 target_include_directories(udsp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(udsp PUBLIC m pthread dl PkgConfig::SRTP2)
+target_link_libraries(udsp PUBLIC m pthread dl PkgConfig::SRTP2 ${UVSRTP_LINK})
 if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 	target_compile_definitions(udsp PRIVATE HAVE_ALSA)
 	target_include_directories(udsp PRIVATE ${ALSA_INCLUDE_DIR})
@@ -119,12 +134,6 @@ if(UDSP_TESTS)
 	# Host-only reference leg for the detectors (spandsp generates the
 	# cross-check stimuli); the suite passes without it.
 	pkg_check_modules(SPANDSP QUIET IMPORTED_TARGET spandsp)
-
-	add_executable(test_srtp ${CMAKE_CURRENT_SOURCE_DIR}/test/test_srtp.c
-		       rtp/srtp.c)
-	target_include_directories(test_srtp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
-	target_link_libraries(test_srtp PkgConfig::SRTP2)
-	add_test(NAME test_srtp COMMAND test_srtp)
 
 	add_executable(test_tdm ${CMAKE_CURRENT_SOURCE_DIR}/test/test_tdm.c tdm/file.c)
 	target_include_directories(test_tdm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
@@ -181,7 +190,7 @@ if(UDSP_TESTS)
 	# object library per Opus setting, built against the source region
 	# data. Only test_media takes the Opus build; the others stay
 	# Opus-free (see UDSP_OPUS above). core/stream.c and core/net.c
-	# reference the rtp and srtp layers, so the rtp sources and libsrtp2
+	# reference the rtp and uvsrtp layers, so the rtp sources and libuvsrtp
 	# join the objects. Registered after the ALSA probe because
 	# UDSP_TDM_SRC gains tdm/alsa.c there.
 	set(UDSP_TEST_REGION_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../data/regions")
@@ -198,7 +207,7 @@ if(UDSP_TESTS)
 	foreach(obj IN LISTS UDSP_TEST_OBJS)
 		target_compile_definitions(${obj} PRIVATE
 			UDSP_REGION_DIR="${UDSP_TEST_REGION_DIR}")
-		target_link_libraries(${obj} PRIVATE PkgConfig::SRTP2)
+		target_link_libraries(${obj} PRIVATE PkgConfig::SRTP2 ${UVSRTP_LINK})
 		if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 			target_compile_definitions(${obj} PRIVATE HAVE_ALSA)
 			target_include_directories(${obj} PRIVATE ${ALSA_INCLUDE_DIR})
@@ -215,7 +224,7 @@ if(UDSP_TESTS)
 				   ${CMAKE_CURRENT_SOURCE_DIR}/slic)
 	target_compile_definitions(test_core PRIVATE
 		UDSP_REGION_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data/regions")
-	target_link_libraries(test_core m pthread dl PkgConfig::SRTP2)
+	target_link_libraries(test_core m pthread dl PkgConfig::SRTP2 ${UVSRTP_LINK})
 	if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 		target_compile_definitions(test_core PRIVATE HAVE_ALSA)
 		target_include_directories(test_core PRIVATE ${ALSA_INCLUDE_DIR})
@@ -233,7 +242,7 @@ if(UDSP_TESTS)
 				   ${CMAKE_CURRENT_SOURCE_DIR}/rtp)
 	target_compile_definitions(test_media PRIVATE
 		UDSP_REGION_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data/regions")
-	target_link_libraries(test_media m pthread dl PkgConfig::SRTP2)
+	target_link_libraries(test_media m pthread dl PkgConfig::SRTP2 ${UVSRTP_LINK})
 	if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 		target_compile_definitions(test_media PRIVATE HAVE_ALSA)
 		target_include_directories(test_media PRIVATE ${ALSA_INCLUDE_DIR})
@@ -271,7 +280,7 @@ if(UDSP_TESTS)
 				   ${CMAKE_CURRENT_SOURCE_DIR}/rtp)
 	target_compile_definitions(test_cli PRIVATE
 		UDSP_REGION_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data/regions")
-	target_link_libraries(test_cli m pthread dl PkgConfig::SRTP2)
+	target_link_libraries(test_cli m pthread dl PkgConfig::SRTP2 ${UVSRTP_LINK})
 	if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 		target_compile_definitions(test_cli PRIVATE HAVE_ALSA)
 		target_include_directories(test_cli PRIVATE ${ALSA_INCLUDE_DIR})
@@ -376,7 +385,7 @@ if(UDSP_TESTS)
 		target_compile_definitions(test_fax_t30 PRIVATE
 			UDSP_REGION_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data/regions")
 		target_link_libraries(test_fax_t30 m pthread dl PkgConfig::SRTP2
-				      PkgConfig::SPANDSP PkgConfig::TIFF)
+				      ${UVSRTP_LINK} PkgConfig::SPANDSP PkgConfig::TIFF)
 		if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 			target_compile_definitions(test_fax_t30 PRIVATE HAVE_ALSA)
 			target_include_directories(test_fax_t30 PRIVATE ${ALSA_INCLUDE_DIR})
@@ -416,7 +425,7 @@ if(UDSP_TESTS)
 		       $<TARGET_OBJECTS:udsp_test_obj>)
 	target_compile_definitions(udsp-linecap-test PRIVATE
 		UDSP_REGION_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data/regions")
-	target_link_libraries(udsp-linecap-test m pthread dl PkgConfig::SRTP2)
+	target_link_libraries(udsp-linecap-test m pthread dl PkgConfig::SRTP2 ${UVSRTP_LINK})
 	if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 		target_compile_definitions(udsp-linecap-test PRIVATE HAVE_ALSA)
 		target_include_directories(udsp-linecap-test PRIVATE ${ALSA_INCLUDE_DIR})
