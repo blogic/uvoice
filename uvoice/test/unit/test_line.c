@@ -1360,6 +1360,34 @@ bool calls_line_dial_ready(unsigned int line)
 	return dial_ready_answer;
 }
 
+bool call_slot_free(unsigned int line, unsigned int *slot)
+{
+	(void)line;
+	*slot = 0;
+	return true;
+}
+
+bool cfg_ui_desk(const struct cfg *cfg)
+{
+	(void)cfg;
+	return false;
+}
+
+const char *const *cfg_ring_sound_names(void)
+{
+	static const char *const names[] = { NULL };
+
+	return names;
+}
+
+int cfg_hal_range(const char *name, int *min, int *max)
+{
+	(void)name;
+	(void)min;
+	(void)max;
+	return -ENOENT;
+}
+
 uint8_t calls_line_fax_kind(unsigned int line, bool *media_running)
 {
 	if (media_running)
@@ -1539,6 +1567,15 @@ void uvoice_ubus_notify(const char *type, struct blob_attr *msg)
 {
 	(void)type;
 	(void)msg;
+}
+
+int ubus_send_reply(struct ubus_context *ctx, struct ubus_request_data *req,
+		    struct blob_attr *msg)
+{
+	(void)ctx;
+	(void)req;
+	(void)msg;
+	return 0;
 }
 
 void uvoice_ubus_request_reply(struct ubus_context *ctx,
@@ -1913,6 +1950,11 @@ void calls_status_dump(struct blob_buf *b, unsigned int line)
 	void *arr = blobmsg_open_array(b, "calls");
 
 	blobmsg_close_array(b, arr);
+}
+
+void call_codec_dump(struct blob_buf *b, unsigned int line,
+		     unsigned int ui_slot)
+{
 }
 
 /* ------------------------------------------------------------- status view */

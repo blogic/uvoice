@@ -69,6 +69,7 @@ struct blob_buf;
 struct proto_tap_endpoints;
 struct trace_endpoint;
 struct ubus_context;
+struct blob_attr;
 struct ubus_method;
 struct ubus_request_data;
 
@@ -220,6 +221,7 @@ enum proto_line_ev {
 	PROTO_EV_FIRST_RTP,
 	PROTO_EV_RING_END,
 	PROTO_EV_LINE_STATE,
+	PROTO_EV_INPUT,
 };
 
 struct proto_line_event {
@@ -245,6 +247,10 @@ struct proto_line_event {
 		struct {
 			uint8_t state;		/* enum hal_line_state */
 		} line;
+		struct {
+			uint8_t key;
+			uint8_t pressed;
+		} input;
 	} u;
 };
 
@@ -736,6 +742,18 @@ struct proto_host {
 	/* Fill len bytes of buf from the entropy source of the OS; false when
 	 * no source answered. media.rand_bytes reads the same source. */
 	bool (*random_bytes)(void *ctx, void *buf, size_t len);
+	enum hal_status (*audio_path_set)(void *ctx, enum hal_audio_path path);
+	enum hal_status (*volume_set)(void *ctx, unsigned int level);
+	enum hal_status (*mute_set)(void *ctx, bool mute);
+	enum hal_status (*led_set)(void *ctx, enum hal_led led,
+				   enum hal_led_mode mode);
+	enum hal_status (*audio_tune_set)(void *ctx,
+					  const struct hal_audio_tune *tune);
+	void (*audio_tune_get)(void *ctx, struct hal_audio_tune *tune);
+	enum hal_status (*key_tone_play)(void *ctx, unsigned int line,
+					 char digit, uint32_t duration_ms);
+	void (*notify)(void *ctx, const char *type, struct blob_attr *msg);
+	bool (*reg_up)(void *ctx, unsigned int line);
 };
 
 /* -------------------------------------------------------- the ops table */

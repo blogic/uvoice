@@ -306,6 +306,7 @@ enum hal_feature {
 						 * leaves line_loop_set NULL,
 						 * and the core then runs no
 						 * loop test on it. */
+	HAL_FEAT_DESK		= (1 << 19),
 };
 
 enum hal_codec {
@@ -1556,6 +1557,66 @@ enum hal_event_type {
 	HAL_EVENT_JOB_DONE,		/* completion of a SLOW op, carries a token */
 	HAL_EVENT_LEC_POLICY,		/* the answer-tone disabler moved the
 					 * canceller policy of a line */
+	HAL_EVENT_INPUT,
+};
+
+enum hal_key {
+	HAL_KEY_SPEAKER = 0,
+	HAL_KEY_HEADSET,
+	HAL_KEY_MUTE,
+	HAL_KEY_VOL_UP,
+	HAL_KEY_VOL_DOWN,
+	HAL_KEY_HOLD,
+	HAL_KEY_TRANSFER,
+	HAL_KEY_CONFERENCE,
+	HAL_KEY_DND,
+	HAL_KEY_MESSAGE,
+};
+
+enum hal_audio_path {
+	HAL_AUDIO_NONE = 0,
+	HAL_AUDIO_HANDSET,
+	HAL_AUDIO_HEADSET,
+	HAL_AUDIO_SPEAKER,
+	HAL_AUDIO_HANDSET_SPEAKER,
+	HAL_AUDIO_HEADSET_SPEAKER,
+};
+
+#define HAL_VOLUME_MAX		8
+
+enum hal_led {
+	HAL_LED_MUTE = 0,
+	HAL_LED_SPEAKER,
+	HAL_LED_HEADSET,
+	HAL_LED_MESSAGE,
+	HAL_LED_CALL,
+};
+
+enum hal_led_mode {
+	HAL_LED_OFF = 0,
+	HAL_LED_ON,
+	HAL_LED_BLINK_SLOW,
+	HAL_LED_BLINK_FAST,
+	HAL_LED_HEARTBEAT,
+};
+
+enum hal_ring_sound {
+	HAL_RING_CLASSIC = 0,
+	HAL_RING_HIGH,
+	HAL_RING_LOW,
+	HAL_RING_FAST,
+	HAL_RING_SLOW,
+	HAL_RING_DUAL,
+	__HAL_RING_SOUND_MAX,
+};
+
+struct hal_audio_tune {
+	int handset_mic_gain;
+	int headset_mic_gain;
+	int speaker_mic_gain;
+	int handset_out_gain;
+	int headset_out_gain;
+	enum hal_ring_sound ring_sound;
 };
 
 /*
@@ -1703,6 +1764,10 @@ struct hal_event {
 						 * read the reason first, 0 is
 						 * also HAL_TONE_DIR_LOCAL */
 		} lec;
+		struct {
+			uint8_t key;
+			uint8_t pressed;
+		} input;
 	} u;
 };
 
@@ -2090,6 +2155,14 @@ struct hal_ops {
 	 */
 	enum hal_status (*line_loop_set)(struct hal *h, unsigned int line,
 					 const struct hal_loop *loop);
+	enum hal_status (*audio_path_set)(struct hal *h,
+					  enum hal_audio_path path);
+	enum hal_status (*volume_set)(struct hal *h, unsigned int level);
+	enum hal_status (*mute_set)(struct hal *h, bool mute);
+	enum hal_status (*led_set)(struct hal *h, enum hal_led led,
+				   enum hal_led_mode mode);
+	enum hal_status (*audio_tune_set)(struct hal *h,
+					  const struct hal_audio_tune *tune);
 };
 
 /*

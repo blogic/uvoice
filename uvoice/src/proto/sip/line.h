@@ -77,4 +77,27 @@ void sip_line_status_dump(struct blob_buf *b, unsigned int line);
  */
 void sip_line_mwi_push(unsigned int line);
 
+bool sip_desk_active(void);
+int sip_desk_dial(unsigned int line, const char *number, uint32_t *id);
+int sip_desk_answer(uint32_t id, enum hal_audio_path path);
+int sip_desk_reject(uint32_t id);
+int sip_desk_hangup(uint32_t id);
+int sip_desk_hold(uint32_t id);
+int sip_desk_resume(uint32_t id);
+int sip_desk_transfer(uint32_t id, const char *target);
+int sip_desk_transfer_attended(uint32_t id, uint32_t id2);
+int sip_desk_conference(uint32_t id, uint32_t id2);
+int sip_desk_dtmf(char digit);
+int sip_desk_mute(bool on);
+int sip_desk_audio(enum hal_audio_path path);
+int sip_desk_volume(unsigned int level);
+int sip_desk_missed(bool on);
+int sip_desk_ring_volume_set(unsigned int level);
+unsigned int sip_desk_ring_volume_get(void);
+int sip_desk_ring_preview(uint32_t duration_ms);
+int sip_desk_ring_preview_stop(void);
+void sip_desk_reload(const struct cfg *cfg);
+void sip_desk_calls_dump(struct blob_buf *b);
+void sip_desk_accounts_dump(struct blob_buf *b);
+
 #endif

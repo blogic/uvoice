@@ -231,7 +231,7 @@ if(UVOICE_PROTO_SIP)
 
 	add_library(uvoice_proto_sip OBJECT proto/sip/proto.c
 		    proto/sip/line.c proto/sip/account.c proto/sip/call.c
-		    proto/sip/fsm.c proto/sip/features.c)
+		    proto/sip/fsm.c proto/sip/desk.c proto/sip/features.c)
 	target_include_directories(uvoice_proto_sip PRIVATE
 				   ${CMAKE_CURRENT_SOURCE_DIR}
 				   ${UBOX_INCLUDE_DIR} ${UBUS_INCLUDE_DIR})
@@ -607,6 +607,16 @@ if(UVOICE_TESTS)
 				      uvoice_sip_txn ${UBOX_LIBRARY})
 		add_test(NAME test_fsm COMMAND test_fsm)
 
+		add_executable(test_desk ${UVOICE_TEST_DIR}/unit/test_desk.c
+			       proto/sip/desk.c dialplan.c)
+		target_include_directories(test_desk PRIVATE
+					   ${UVOICE_TEST_DIR}/unit
+					   ${CMAKE_CURRENT_SOURCE_DIR}
+					   ${UBOX_INCLUDE_DIR})
+		target_link_libraries(test_desk uvoice_sdp uvoice_sip
+				      uvoice_sip_txn ${UBOX_LIBRARY})
+		add_test(NAME test_desk COMMAND test_desk)
+
 		# The line shell suite compiles both halves of the shell
 		# (line/line.c, proto/sip/line.c and proto/sip/proto.c), fsm.c
 		# and dialplan.c into itself and defines its own
@@ -619,7 +629,8 @@ if(UVOICE_TESTS)
 		add_executable(test_line ${UVOICE_TEST_DIR}/unit/test_line.c
 			       line/line.c proto/sip/line.c
 			       proto/sip/proto.c proto/sip/features.c
-			       proto/sip/fsm.c dialplan.c cdr.c trace.c
+			       proto/sip/fsm.c proto/sip/desk.c dialplan.c
+			       cdr.c trace.c
 			       uvoice_random.c proto/proto.c net/ports.c
 			       net/conntrack.c)
 		target_include_directories(test_line PRIVATE

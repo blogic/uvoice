@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "uvoice-api-schema.json",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "title": "uvoice ubus API",
-  "description": "Every ubus method the uvoiced daemon answers, on the voice, voice.trace, voice.calltrace and voice.stub objects (voice.stub exists on the UVOICE_HAL_STUB build only). The voice object also emits the notification cdr, whose payload is $defs CdrEvent. The root validates one capture envelope {object, method, args, reply}; args may be absent for a NOARG method, reply may be absent for a call answered with a bare status code. Owning functions are cited per property.",
+  "description": "Every ubus method the uvoiced daemon answers, on the voice, voice.trace, voice.calltrace and voice.stub objects (voice.stub exists on the UVOICE_HAL_STUB build only). With voip.base.ui desk the voice object also emits the notifications call, device and registration; registration and cdr go out under every ui. Their payloads are $defs DeskCallEvent, DeskDevice, RegistrationEvent and CdrEvent. The root validates one capture envelope {object, method, args, reply}; args may be absent for a NOARG method, reply may be absent for a call answered with a bare status code. Owning functions are cited per property.",
   "type": "object",
 
   "oneOf": [
@@ -21,6 +21,24 @@
     { "$ref": "#/$defs/VoiceSeizeCall" },
     { "$ref": "#/$defs/VoiceReleaseCall" },
     { "$ref": "#/$defs/VoiceDialCall" },
+    { "$ref": "#/$defs/DeskAnswerCall" },
+    { "$ref": "#/$defs/DeskRejectCall" },
+    { "$ref": "#/$defs/DeskHangupCall" },
+    { "$ref": "#/$defs/DeskHoldCall" },
+    { "$ref": "#/$defs/DeskResumeCall" },
+    { "$ref": "#/$defs/DeskTransferCall" },
+    { "$ref": "#/$defs/DeskConferenceCall" },
+    { "$ref": "#/$defs/DeskDtmfCall" },
+    { "$ref": "#/$defs/DeskMuteCall" },
+    { "$ref": "#/$defs/DeskAudioCall" },
+    { "$ref": "#/$defs/DeskVolumeCall" },
+    { "$ref": "#/$defs/DeskMissedCall" },
+    { "$ref": "#/$defs/DeskCallsCall" },
+    { "$ref": "#/$defs/DeskAccountsCall" },
+    { "$ref": "#/$defs/DeskAudioGetCall" },
+    { "$ref": "#/$defs/DeskAudioSetCall" },
+    { "$ref": "#/$defs/DeskRingPreviewCall" },
+    { "$ref": "#/$defs/DeskRingPreviewStopCall" },
     { "$ref": "#/$defs/TraceGetCall" },
     { "$ref": "#/$defs/TraceSetCall" },
     { "$ref": "#/$defs/CalltraceArmCall" },
@@ -40,6 +58,208 @@
 
   "$defs": {
 
+    "DeskCallArgs": {
+      "type": "object",
+      "properties": {
+        "call": { "$ref": "#/$defs/U32" },
+        "call2": { "$ref": "#/$defs/U32" },
+        "path": { "$ref": "#/$defs/DeskPathArg" },
+        "target": { "type": "string" }
+      },
+      "required": ["call"],
+      "additionalProperties": false
+    },
+    "DeskPathArg": {
+      "enum": ["none", "handset", "headset", "speaker", "handset_speaker", "headset_speaker"]
+    },
+    "DeskDtmfArgs": {
+      "type": "object",
+      "properties": { "digit": { "type": "string", "pattern": "^[0-9*#A-D]$" } },
+      "required": ["digit"],
+      "additionalProperties": false
+    },
+    "DeskMuteArgs": {
+      "type": "object",
+      "properties": { "on": { "type": "boolean" } },
+      "required": ["on"],
+      "additionalProperties": false
+    },
+    "DeskMissedArgs": {
+      "type": "object",
+      "description": "proto/sip/proto.c desk_ubus_missed(): on while a missed call is unseen. The message LED beats while it is on, ahead of the message waiting blink. The client owns the state and sends it again after a daemon restart.",
+      "properties": { "on": { "type": "boolean" } },
+      "required": ["on"],
+      "additionalProperties": false
+    },
+    "DeskAudioArgs": {
+      "type": "object",
+      "properties": { "path": { "$ref": "#/$defs/DeskPathArg" } },
+      "required": ["path"],
+      "additionalProperties": false
+    },
+    "DeskVolumeArgs": {
+      "type": "object",
+      "properties": { "level": { "type": "integer", "minimum": 0, "maximum": 8 } },
+      "required": ["level"],
+      "additionalProperties": false
+    },
+    "MicGainDb": { "type": "integer", "minimum": -4, "maximum": 52, "multipleOf": 2, "description": "Microphone gain in dB (cfg/schema.h cfg_hal_options range, 2 dB steps)." },
+    "OutGainDb": { "type": "integer", "minimum": -30, "maximum": 6, "multipleOf": 6, "description": "Output gain in dB (cfg/schema.h cfg_hal_options range, 6 dB steps)." },
+    "RingSoundWord": { "enum": ["classic", "high", "low", "fast", "slow", "dual"], "description": "uci ring_sound (cfg/schema.h cfg_ring_sound_vals), in the order of hal/hal.h enum hal_ring_sound." },
+    "DeskAudioSetArgs": {
+      "type": "object",
+      "description": "proto/sip/proto.c desk_ubus_audio_set(): any subset. It applies at once and writes no uci; a reload puts back the uci values. A value out of range or off its step answers INVALID_ARGUMENT and nothing changes.",
+      "properties": {
+        "handset_mic_gain": { "$ref": "#/$defs/MicGainDb" },
+        "headset_mic_gain": { "$ref": "#/$defs/MicGainDb" },
+        "speaker_mic_gain": { "$ref": "#/$defs/MicGainDb" },
+        "handset_out_gain": { "$ref": "#/$defs/OutGainDb" },
+        "headset_out_gain": { "$ref": "#/$defs/OutGainDb" },
+        "ring_sound": { "$ref": "#/$defs/RingSoundWord" },
+        "ring_volume": { "type": "integer", "minimum": 0, "maximum": 8 }
+      },
+      "additionalProperties": false
+    },
+    "DeskAudioReply": {
+      "type": "object",
+      "description": "proto/sip/proto.c audio_reply_send(): the live tuning, which differs from uci after an audio_set. Gains are signed values cast to u32.",
+      "properties": {
+        "handset_mic_gain": { "$ref": "#/$defs/U32" },
+        "headset_mic_gain": { "$ref": "#/$defs/U32" },
+        "speaker_mic_gain": { "$ref": "#/$defs/U32" },
+        "handset_out_gain": { "$ref": "#/$defs/U32" },
+        "headset_out_gain": { "$ref": "#/$defs/U32" },
+        "ring_sound": { "$ref": "#/$defs/RingSoundWord" },
+        "ring_volume": { "$ref": "#/$defs/U32" },
+        "ring_sounds": { "type": "array", "items": { "$ref": "#/$defs/RingSoundWord" } }
+      },
+      "required": ["handset_mic_gain", "headset_mic_gain", "speaker_mic_gain", "handset_out_gain", "headset_out_gain", "ring_sound", "ring_volume", "ring_sounds"],
+      "additionalProperties": false
+    },
+    "DeskRingPreviewArgs": {
+      "type": "object",
+      "description": "proto/sip/proto.c desk_ubus_ring_preview(): plays the live ring_sound at the ring volume. UNKNOWN_ERROR while the phone is not idle.",
+      "properties": { "duration_ms": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 3000 } },
+      "additionalProperties": false
+    },
+    "DeskDialReply": {
+      "type": "object",
+      "description": "proto/sip/proto.c desk_ubus_dial(): the id of the placed call.",
+      "properties": { "call": { "$ref": "#/$defs/U32" } },
+      "required": ["call"],
+      "additionalProperties": false
+    },
+    "DeskCallState": {
+      "enum": ["dialling", "calling", "ringback", "ringing", "connected", "held", "conference", "clearing", "idle"]
+    },
+    "DeskCall": {
+      "type": "object",
+      "description": "proto/sip/line.c desk_call_blob(). call is an opaque id that survives the move of a dialling call to its slot; slot 2 is the dialling record. since is the wall-clock unix time of the last state change; connected is the wall-clock unix time of the first connect and stays across hold, resume and conference, 0 before the call connects. codec and ptime come from proto/sip/call.c call_codec_dump() and are absent until the call commits a session.",
+      "properties": {
+        "call": { "$ref": "#/$defs/U32" },
+        "line": { "$ref": "#/$defs/U32" },
+        "slot": { "$ref": "#/$defs/U32" },
+        "state": { "$ref": "#/$defs/DeskCallState" },
+        "direction": { "enum": ["in", "out"] },
+        "number": { "type": "string" },
+        "name": { "type": "string" },
+        "focused": { "type": "boolean" },
+        "since": { "$ref": "#/$defs/U32" },
+        "connected": { "$ref": "#/$defs/U32" },
+        "codec": { "$ref": "#/$defs/SdpCodecWord", "description": "Committed session only; t38 for an image session." },
+        "ptime": { "$ref": "#/$defs/U32", "description": "Committed ptime ms; 0 on a T.38 session." }
+      },
+      "required": ["call", "line", "slot", "state", "direction", "number", "name", "focused", "since", "connected"],
+      "dependentRequired": {
+        "codec": ["ptime"],
+        "ptime": ["codec"]
+      },
+      "additionalProperties": false
+    },
+    "DeskCallEvent": {
+      "type": "object",
+      "description": "Notification call (proto/sip/line.c desk_op_call_changed()): the call object, plus reason on clearing and idle.",
+      "allOf": [ { "$ref": "#/$defs/DeskCallEventKeys" } ],
+      "unevaluatedProperties": false
+    },
+    "DeskCallEventKeys": {
+      "properties": {
+        "call": { "$ref": "#/$defs/U32" },
+        "line": { "$ref": "#/$defs/U32" },
+        "slot": { "$ref": "#/$defs/U32" },
+        "state": { "$ref": "#/$defs/DeskCallState" },
+        "direction": { "enum": ["in", "out"] },
+        "number": { "type": "string" },
+        "name": { "type": "string" },
+        "focused": { "type": "boolean" },
+        "since": { "$ref": "#/$defs/U32" },
+        "connected": { "$ref": "#/$defs/U32" },
+        "codec": { "$ref": "#/$defs/SdpCodecWord", "description": "Committed session only; t38 for an image session." },
+        "ptime": { "$ref": "#/$defs/U32", "description": "Committed ptime ms; 0 on a T.38 session." },
+        "reason": { "enum": ["local", "remote_bye", "busy", "rejected", "unavailable", "failed", "cancelled", "transferred"] }
+      },
+      "required": ["call", "line", "slot", "state", "direction", "number", "name", "focused", "since", "connected"],
+      "dependentRequired": {
+        "codec": ["ptime"],
+        "ptime": ["codec"]
+      }
+    },
+    "DeskDevice": {
+      "type": "object",
+      "description": "proto/sip/line.c desk_device_blob(), also the notification device. volume is the level of the current path, or of the ringer while no path is open. state is the device state (proto/sip/desk.c desk_state_get()); ended is the silence after the last call ended with the handset off hook, which refuses dialling until the handset goes down.",
+      "properties": {
+        "path": { "enum": ["none", "handset", "headset", "speaker", "group"] },
+        "mute": { "type": "boolean" },
+        "volume": { "$ref": "#/$defs/U32" },
+        "dnd": { "type": "boolean" },
+        "state": { "enum": ["idle", "dial", "alert", "active", "parked", "ended"] }
+      },
+      "required": ["path", "mute", "volume", "dnd", "state"],
+      "additionalProperties": false
+    },
+    "DeskCallsReply": {
+      "type": "object",
+      "description": "proto/sip/line.c sip_desk_calls_dump(): one entry per existing call, empty while idle.",
+      "properties": {
+        "calls": { "type": "array", "items": { "$ref": "#/$defs/DeskCall" } },
+        "device": { "$ref": "#/$defs/DeskDevice" }
+      },
+      "required": ["calls", "device"],
+      "additionalProperties": false
+    },
+    "DeskAccountsReply": {
+      "type": "object",
+      "description": "proto/sip/line.c sip_desk_accounts_dump(): the enabled channels. label is sip_callerid_name, or sip_username when that is empty.",
+      "properties": {
+        "accounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "line": { "$ref": "#/$defs/U32" },
+              "label": { "type": "string" },
+              "user": { "type": "string" },
+              "registered": { "type": "boolean" }
+            },
+            "required": ["line", "label", "user", "registered"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["accounts"],
+      "additionalProperties": false
+    },
+    "RegistrationEvent": {
+      "type": "object",
+      "description": "Notification registration (proto/proto.c host_reg_notify()), sent on every registration state post.",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "state": { "enum": ["registered", "unregistered"] },
+        "label": { "type": "string" }
+      },
+      "required": ["line", "state", "label"],
+      "additionalProperties": false
+    },
     "CdrEvent": {
       "type": "object",
       "description": "Notification cdr (proto/proto.c host_cdr_call_ended()), sent once a call record is closed and readable through method cdr under its seq.",
@@ -50,6 +270,205 @@
       "required": ["line", "seq"],
       "additionalProperties": false
     },
+    "DeskAnswerCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "answer" },
+        "args": { "$ref": "#/$defs/DeskCallArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskRejectCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "reject" },
+        "args": { "$ref": "#/$defs/DeskCallArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskHangupCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "hangup" },
+        "args": { "$ref": "#/$defs/DeskCallArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskHoldCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "hold" },
+        "args": { "$ref": "#/$defs/DeskCallArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskResumeCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "resume" },
+        "args": { "$ref": "#/$defs/DeskCallArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskTransferCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "transfer" },
+        "args": { "$ref": "#/$defs/DeskCallArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskConferenceCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "conference" },
+        "args": { "$ref": "#/$defs/DeskCallArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskDtmfCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "dtmf" },
+        "args": { "$ref": "#/$defs/DeskDtmfArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskMuteCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "mute" },
+        "args": { "$ref": "#/$defs/DeskMuteArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskMissedCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "missed" },
+        "args": { "$ref": "#/$defs/DeskMissedArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskAudioCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "audio" },
+        "args": { "$ref": "#/$defs/DeskAudioArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskVolumeCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "volume" },
+        "args": { "$ref": "#/$defs/DeskVolumeArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskAudioGetCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "audio_get" },
+        "reply": { "$ref": "#/$defs/DeskAudioReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskAudioSetCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "audio_set" },
+        "args": { "$ref": "#/$defs/DeskAudioSetArgs" },
+        "reply": { "$ref": "#/$defs/DeskAudioReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskRingPreviewCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "ring_preview" },
+        "args": { "$ref": "#/$defs/DeskRingPreviewArgs" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskRingPreviewStopCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "ring_preview_stop" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskCallsCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "calls" },
+        "reply": { "$ref": "#/$defs/DeskCallsReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskAccountsCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[], present while voip.base.ui is desk. Refusals answer a bare status: NOT_FOUND for an unknown call, INVALID_ARGUMENT for bad arguments.",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "accounts" },
+        "reply": { "$ref": "#/$defs/DeskAccountsReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+
     "U32": {
       "type": "integer",
       "minimum": -2147483648,
@@ -1577,9 +1996,16 @@
         "engine_cpu": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32." },
         "engine_prio": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32." },
         "pcm_offset_bits": { "$ref": "#/$defs/U32" },
-        "sample_rate": { "$ref": "#/$defs/U32" }
+        "sample_rate": { "$ref": "#/$defs/U32" },
+        "handset_mic_gain": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32. Handset microphone gain in dB, -4..52, 2 dB steps (css backend)." },
+        "headset_mic_gain": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32. Headset microphone gain in dB, -4..52, 2 dB steps (css backend)." },
+        "speaker_mic_gain": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32. Loudspeaker path microphone gain in dB, -4..52, 2 dB steps (css backend)." },
+        "handset_out_gain": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32. Earpiece output gain in dB, -30..6, 6 dB steps (css backend)." },
+        "headset_out_gain": { "$ref": "#/$defs/U32", "description": "Signed value cast to u32. Headset output gain in dB, -30..6, 6 dB steps (css backend)." },
+        "ring_sound": { "$ref": "#/$defs/RingSoundWord" },
+        "ring_volume": { "$ref": "#/$defs/U32", "description": "Desk ring volume 0..8 at start and at each reload." }
       },
-      "required": ["tdm_backend", "tdm_playback", "tdm_capture", "slic_plugin", "fax_plugin", "spidev", "gpio_reset", "gpio_interrupt", "populated_ports_cfg", "populated_ports", "channels", "prefill_periods", "engine_cpu", "engine_prio", "pcm_offset_bits", "sample_rate"],
+      "required": ["tdm_backend", "tdm_playback", "tdm_capture", "slic_plugin", "fax_plugin", "spidev", "gpio_reset", "gpio_interrupt", "populated_ports_cfg", "populated_ports", "channels", "prefill_periods", "engine_cpu", "engine_prio", "pcm_offset_bits", "sample_rate", "handset_mic_gain", "headset_mic_gain", "speaker_mic_gain", "handset_out_gain", "headset_out_gain", "ring_sound", "ring_volume"],
       "additionalProperties": false
     },
 
@@ -1795,6 +2221,10 @@
           "$ref": "#/$defs/ProtocolWord",
           "description": "uci protocol (cfg/uci.c base_fields)."
         },
+        "ui": {
+          "enum": ["fxs", "desk"],
+          "description": "uci ui: the call control policy, fxs (proto/sip/fsm.c) or desk (proto/sip/desk.c)."
+        },
         "srtp_enabled": { "type": "boolean" },
         "region": { "type": "string" },
         "restrict_source": { "$ref": "#/$defs/U32" },
@@ -1825,7 +2255,7 @@
         "channel": { "type": "array", "items": { "$ref": "#/$defs/ChannelConfigEntry" }, "maxItems": 2 },
         "codec": { "type": "array", "items": { "$ref": "#/$defs/CodecConfigEntry" } }
       },
-      "required": ["loaded", "enabled", "channels", "local_interface", "transport", "protocol", "srtp_enabled", "region", "restrict_source", "options_interval", "keepalive_interval", "keepalive_enabled", "dns_cache_update_mode", "dns_move_unregister", "dns_srv_mode", "dns_linger", "mwi_subscribe", "star_codes_local", "rtcp_enabled", "ipv6_enabled", "rtcp_interval", "alert_info_prefix", "tls_cert_path", "tls_server_verification_enabled", "tls_keylog_enabled", "hal", "debug", "mgcp", "channel", "codec"],
+      "required": ["loaded", "enabled", "channels", "local_interface", "transport", "protocol", "ui", "srtp_enabled", "region", "restrict_source", "options_interval", "keepalive_interval", "keepalive_enabled", "dns_cache_update_mode", "dns_move_unregister", "dns_srv_mode", "dns_linger", "mwi_subscribe", "star_codes_local", "rtcp_enabled", "ipv6_enabled", "rtcp_interval", "alert_info_prefix", "tls_cert_path", "tls_server_verification_enabled", "tls_keylog_enabled", "hal", "debug", "mgcp", "channel", "codec"],
       "additionalProperties": false
     },
 
@@ -2199,9 +2629,14 @@
         "method": { "const": "dial" },
         "args": { "$ref": "#/$defs/DialArgs" },
         "reply": {
-          "allOf": [
-            { "$ref": "#/$defs/InjectReply" },
-            { "properties": { "injected": { "const": "dial" } }, "required": ["digits"] }
+          "oneOf": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/InjectReply" },
+                { "properties": { "injected": { "const": "dial" } }, "required": ["digits"] }
+              ]
+            },
+            { "$ref": "#/$defs/DeskDialReply" }
           ]
         }
       },

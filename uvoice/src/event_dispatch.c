@@ -322,6 +322,7 @@ static const char *event_word(uint16_t type, char *buf, size_t len)
 	case HAL_EVENT_AUDIO_END:	return "audio_end";
 	case HAL_EVENT_JOB_DONE:	return "job_done";
 	case HAL_EVENT_LEC_POLICY:	return "lec_policy";
+	case HAL_EVENT_INPUT:		return "input";
 	}
 
 	snprintf(buf, len, "type=%u", type);
@@ -405,6 +406,9 @@ void event_dispatch(const struct hal_event *ev)
 	case HAL_EVENT_CID_SENT:
 		TRACE(TRACE_HOOK, "line %u cid sent kind=%u status=%d", ev->line,
 		      ev->u.cid_sent.kind, ev->u.cid_sent.status);
+		return;
+	case HAL_EVENT_INPUT:
+		line_hal_event(ev);
 		return;
 	case HAL_EVENT_T38:
 		/* the line names the state and the stream; this arm exists so the

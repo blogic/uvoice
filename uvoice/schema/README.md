@@ -15,8 +15,22 @@ the shape of the `dump_config` reply, because it is a reply.
 | `uvoice-api-schema.json` | Every ubus method of the `voice`, `voice.trace`, `voice.calltrace` and `voice.stub` objects: argument policies and reply payloads. The root validates one capture envelope. |
 
 The `voice.stub` object exists on the stub build only (`UVOICE_HAL_STUB`).
-The daemon emits no ubus events and no notifications. Method replies are
-the whole API.
+
+The `voice` object sends three notifications (`ubus_notify`):
+
+- `registration` under every `voip.base.ui`, on each registration state
+  post (`$defs/RegistrationEvent`, `host_reg_notify()` in
+  `src/proto/proto.c`);
+- `call` and `device` under `voip.base.ui desk` (`$defs/DeskCallEvent`,
+  `$defs/DeskDevice`, `desk_op_call_changed()` and
+  `desk_op_device_changed()` in `src/proto/sip/line.c`).
+
+The root validates method captures only; the notification payloads have
+their own `$defs`.
+
+With `voip.base.ui desk` the SIP protocol adds the desk phone verbs
+(`sip_desk_rows[]` in `src/proto/sip/proto.c`). Its `dial` replaces the
+injection verb of the core and answers `$defs/DeskDialReply`.
 
 Sources: `ubus_connect_cb()` in `src/ubus.c`; every `ubus_send_reply` call
 site in `src/ubus.c` and `src/hal/stub/stub.c`.

@@ -1088,7 +1088,7 @@ static const struct ubus_method voice_methods_tail[] = {
 };
 
 /* the bound of the rows a protocol adds to the voice object */
-#define VOICE_PROTO_METHODS_MAX	8
+#define VOICE_PROTO_METHODS_MAX	24
 
 static struct ubus_method voice_methods[ARRAY_SIZE(voice_methods_head) +
 					VOICE_PROTO_METHODS_MAX +
@@ -1127,8 +1127,17 @@ static void voice_methods_compose(void)
 	for (i = 0; rows && i < nproto; i++)
 		voice_methods[n++] = rows[i];
 
-	for (i = 0; i < ARRAY_SIZE(voice_methods_tail); i++)
+	for (i = 0; i < ARRAY_SIZE(voice_methods_tail); i++) {
+		unsigned int j;
+
+		for (j = 0; j < n; j++)
+			if (!strcmp(voice_methods[j].name,
+				    voice_methods_tail[i].name))
+				break;
+		if (j < n)
+			continue;
 		voice_methods[n++] = voice_methods_tail[i];
+	}
 
 	voice_object_type.n_methods = (int)n;
 	voice_object.n_methods = (int)n;

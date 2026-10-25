@@ -259,6 +259,32 @@ void uvoice_ubus_notify(const char *type, struct blob_attr *msg)
 {
 }
 
+enum hal_status line_audio_path_set(enum hal_audio_path path)
+{
+	return HAL_OK;
+}
+
+enum hal_status line_volume_set(unsigned int level)
+{
+	return HAL_OK;
+}
+
+enum hal_status line_mute_set(bool mute)
+{
+	return HAL_OK;
+}
+
+enum hal_status line_led_set(enum hal_led led, enum hal_led_mode mode)
+{
+	return HAL_OK;
+}
+
+enum hal_status line_key_tone_play(unsigned int line, char digit,
+				   uint32_t duration_ms)
+{
+	return HAL_OK;
+}
+
 /* ------------------------------------------------- the scripted SIP table */
 
 static struct {

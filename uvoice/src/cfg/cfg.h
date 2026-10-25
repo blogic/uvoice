@@ -186,6 +186,13 @@ struct cfg_hal {
 	int engine_prio;
 	unsigned int pcm_offset_bits;
 	unsigned int sample_rate;
+	int handset_mic_gain;
+	int headset_mic_gain;
+	int speaker_mic_gain;
+	int handset_out_gain;
+	int headset_out_gain;
+	unsigned int ring_sound;
+	unsigned int ring_volume;
 };
 
 /* These array widths mirror udsp/src/include/udsp/udsp.h struct udsp_config. */
@@ -473,6 +480,7 @@ struct cfg {
 	 * script then restarts the daemon. cfg_protocol_of() maps the word.
 	 */
 	char protocol[CFG_PROTOCOL_MAX];
+	char ui[CFG_PROTOCOL_MAX];
 	/*
 	 * The SDES SRTP switch. The call layer reads it at leg start together
 	 * with the backend HAL_FEAT_SRTP bit, so a backend without SRTP still
@@ -557,6 +565,24 @@ void cfg_dump(const struct cfg *cfg, struct blob_buf *b);
  * every loaded config names one of the two values.
  */
 enum cfg_protocol cfg_protocol_of(const struct cfg *cfg);
+bool cfg_ui_desk(const struct cfg *cfg);
+
+/**
+ * cfg_ring_sound_names() - the words of voip.hal.ring_sound
+ *
+ * Return: a NULL terminated array, in the order of the ring_sound index.
+ */
+const char *const *cfg_ring_sound_names(void);
+
+/**
+ * cfg_hal_range() - the range of an integer option of voip.hal
+ * @name: the option name
+ * @min: filled with the lowest value
+ * @max: filled with the highest value
+ *
+ * Return: 0, or -ENOENT if voip.hal has no option @name.
+ */
+int cfg_hal_range(const char *name, int *min, int *max);
 
 /*
  * The dialect cfg->mgcp.dialect names. An empty word answers

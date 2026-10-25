@@ -1000,6 +1000,7 @@ static const struct cfg_field base_fields[] = {
 	 * word takes the default with one warn, so cfg_protocol_of() sees one
 	 * of the two words. */
 	FIELD(ENUM_STR, "protocol", protocol),
+	FIELD(ENUM_STR, "ui", ui),
 	FIELD(BOOL, "srtp_enabled", srtp_enabled),
 	/* Keep this read free-form, and the schema row says so: line/line.c
 	 * accepts more codes than any list here could hold. */
@@ -1078,6 +1079,13 @@ static const struct cfg_field hal_fields[] = {
 	FIELD(INT, "engine_prio", engine_prio),
 	FIELD(UINT, "pcm_offset_bits", pcm_offset_bits),
 	FIELD(ENUM_UINT, "sample_rate", sample_rate),
+	FIELD(INT, "handset_mic_gain", handset_mic_gain),
+	FIELD(INT, "headset_mic_gain", headset_mic_gain),
+	FIELD(INT, "speaker_mic_gain", speaker_mic_gain),
+	FIELD(INT, "handset_out_gain", handset_out_gain),
+	FIELD(INT, "headset_out_gain", headset_out_gain),
+	FIELD(ENUM_IDX, "ring_sound", ring_sound),
+	FIELD(UINT, "ring_volume", ring_volume),
 	FIELD_LAST
 };
 #undef FIELD_TYPE
@@ -1701,6 +1709,32 @@ enum cfg_protocol cfg_protocol_of(const struct cfg *cfg)
 		return CFG_PROTO_MGCP;
 
 	return CFG_PROTO_SIP;
+}
+
+bool cfg_ui_desk(const struct cfg *cfg)
+{
+	return !strcmp(cfg->ui, "desk");
+}
+
+const char *const *cfg_ring_sound_names(void)
+{
+	return cfg_ring_sound_vals;
+}
+
+int cfg_hal_range(const char *name, int *min, int *max)
+{
+	const struct cfg_option_desc *o;
+
+	for (o = cfg_hal_options; o->name; o++) {
+		if (strcmp(o->name, name))
+			continue;
+
+		*min = o->min;
+		*max = o->max;
+		return 0;
+	}
+
+	return -ENOENT;
 }
 
 /* cfg_dtmf_mode_vals (schema.h) carries five uci aliases for three values,

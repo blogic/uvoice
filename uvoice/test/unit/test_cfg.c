@@ -5624,15 +5624,29 @@ static void hal_schema_test(void)
 	unsigned int count = 0;
 	unsigned int i;
 
-	CASE("schema: every HAL option is supported and restarts all");
+	static const char *const live[] = {
+		"handset_mic_gain", "headset_mic_gain", "speaker_mic_gain",
+		"handset_out_gain", "headset_out_gain", "ring_sound",
+		"ring_volume",
+	};
+	unsigned int j, live_count = 0;
+	bool is_live;
+
+	CASE("schema: every HAL option is supported; the audio tuning is live");
 	for (i = 0; cfg_hal_options[i].name; i++) {
 		d = &cfg_hal_options[i];
+		is_live = false;
+		for (j = 0; j < ARRAY_SIZE(live); j++)
+			is_live |= !strcmp(d->name, live[j]);
+		live_count += is_live;
 		CHECK_UINT(d->support, SUP_SUPPORTED);
-		CHECK_UINT(d->apply_class, APPLY_RESTART_ALL);
+		CHECK_UINT(d->apply_class,
+			   is_live ? APPLY_LIVE : APPLY_RESTART_ALL);
 		CHECK(d->alias_of == NULL);
 		count++;
 	}
-	CHECK_UINT(count, 15);
+	CHECK_UINT(count, 22);
+	CHECK_UINT(live_count, ARRAY_SIZE(live));
 }
 
 /*
@@ -5809,6 +5823,13 @@ static void hal_default_tests(void)
 	CHECK_UINT(hal->engine_prio, 50);
 	CHECK_UINT(hal->pcm_offset_bits, 0);
 	CHECK_UINT(hal->sample_rate, 8000);
+	CHECK_UINT(hal->handset_mic_gain, 24);
+	CHECK_UINT(hal->headset_mic_gain, 28);
+	CHECK_UINT(hal->speaker_mic_gain, 48);
+	CHECK_UINT(hal->handset_out_gain, 0);
+	CHECK_UINT(hal->headset_out_gain, 0);
+	CHECK_UINT(hal->ring_sound, 0);
+	CHECK_UINT(hal->ring_volume, 5);
 	fixture_free(&fixture);
 	unsetenv("PDB_NUM_POTS");
 
@@ -5990,6 +6011,45 @@ static void hal_validation_tests(void)
 	CHECK_UINT(fixture.cfg->hal.engine_prio, 99);
 	CHECK_UINT(fixture.cfg->hal.pcm_offset_bits, 15);
 	fixture_free(&fixture);
+
+	CASE("the audio gains load in dB and clamp to the codec range");
+	FIXTURE_LOAD_OR_RETURN(fixture, hal_option_load(
+		"\toption handset_mic_gain '30'\n"
+		"\toption headset_mic_gain '-5'\n"
+		"\toption speaker_mic_gain '53'\n"
+		"\toption handset_out_gain '7'\n"
+		"\toption headset_out_gain '-31'\n"));
+	CHECK_UINT(fixture.cfg->hal.handset_mic_gain, 30);
+	CHECK_UINT(fixture.cfg->hal.headset_mic_gain, -4);
+	CHECK_UINT(fixture.cfg->hal.speaker_mic_gain, 52);
+	CHECK_UINT(fixture.cfg->hal.handset_out_gain, 6);
+	CHECK_UINT(fixture.cfg->hal.headset_out_gain, -30);
+	fixture_free(&fixture);
+
+	CASE("the ring sound loads as a word index and the ring volume clamps");
+	FIXTURE_LOAD_OR_RETURN(fixture, hal_option_load(
+		"\toption ring_sound 'dual'\n"
+		"\toption ring_volume '9'\n"));
+	CHECK_UINT(fixture.cfg->hal.ring_sound, 5);
+	CHECK_UINT(fixture.cfg->hal.ring_volume, 8);
+	CHECK_CSTR(cfg_ring_sound_names()[5], "dual");
+	fixture_free(&fixture);
+
+	CASE("an unknown ring sound takes the default");
+	FIXTURE_LOAD_OR_RETURN(fixture, hal_option_load(
+		"\toption ring_sound 'bell'\n"));
+	CHECK_UINT(fixture.cfg->hal.ring_sound, 0);
+	fixture_free(&fixture);
+
+	CASE("cfg_hal_range reads the schema range of a HAL option");
+	{
+		int min = 0, max = 0;
+
+		CHECK(cfg_hal_range("handset_out_gain", &min, &max) == 0);
+		CHECK_UINT(min, -30);
+		CHECK_UINT(max, 6);
+		CHECK(cfg_hal_range("no_such_option", &min, &max) == -ENOENT);
+	}
 
 	CASE("sample_rate accepts only the two line rates");
 	FIXTURE_LOAD_OR_RETURN(fixture,

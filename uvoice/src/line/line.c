@@ -380,6 +380,7 @@ struct line {
 
 static struct line lines[CFG_CHANNEL_MAX];
 static bool lines_up;
+static struct hal_audio_tune line_tune;
 /* lines_start() hands the protocol the final capability */
 static bool lines_cap_final_push;
 
@@ -3417,6 +3418,78 @@ enum hal_status line_conf_set(unsigned int line, bool on)
 	return st;
 }
 
+enum hal_status line_audio_path_set(enum hal_audio_path path)
+{
+	if (!uv.hal || !hal_backend_ops.audio_path_set)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.audio_path_set(uv.hal, path);
+}
+
+enum hal_status line_volume_set(unsigned int level)
+{
+	if (!uv.hal || !hal_backend_ops.volume_set)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.volume_set(uv.hal, level);
+}
+
+enum hal_status line_mute_set(bool mute)
+{
+	if (!uv.hal || !hal_backend_ops.mute_set)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.mute_set(uv.hal, mute);
+}
+
+enum hal_status line_led_set(enum hal_led led, enum hal_led_mode mode)
+{
+	if (!uv.hal || !hal_backend_ops.led_set)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.led_set(uv.hal, led, mode);
+}
+
+enum hal_status line_audio_tune_set(const struct hal_audio_tune *tune)
+{
+	if (tune->ring_sound >= __HAL_RING_SOUND_MAX)
+		return HAL_UNSUPPORTED;
+
+	line_tune = *tune;
+	if (!uv.hal || !hal_backend_ops.audio_tune_set)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.audio_tune_set(uv.hal, &line_tune);
+}
+
+void line_audio_tune_get(struct hal_audio_tune *tune)
+{
+	*tune = line_tune;
+}
+
+static void audio_tune_take(const struct cfg *cfg)
+{
+	const struct hal_audio_tune tune = {
+		.handset_mic_gain = cfg->hal.handset_mic_gain,
+		.headset_mic_gain = cfg->hal.headset_mic_gain,
+		.speaker_mic_gain = cfg->hal.speaker_mic_gain,
+		.handset_out_gain = cfg->hal.handset_out_gain,
+		.headset_out_gain = cfg->hal.headset_out_gain,
+		.ring_sound = (enum hal_ring_sound)cfg->hal.ring_sound,
+	};
+
+	line_audio_tune_set(&tune);
+}
+
+enum hal_status line_key_tone_play(unsigned int line, char digit,
+				   uint32_t duration_ms)
+{
+	if (!uv.hal || !hal_backend_ops.digit_play)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.digit_play(uv.hal, line, digit, duration_ms);
+}
+
 /*
  * The ring template the caller's number selects. The comparison is
  * full-string exact, the first configured slot that matches wins, and a slot
@@ -4437,6 +4510,18 @@ static void line_state_event(struct line *l, const struct hal_event *ev)
 	line_event_forward(l, &fwd);
 }
 
+static void input_forward(struct line *l, const struct hal_event *ev)
+{
+	struct proto_line_event fwd = { .type = PROTO_EV_INPUT };
+
+	TRACE(TRACE_HOOK, "line %u input key %u pressed %u", l->index,
+	      ev->u.input.key, ev->u.input.pressed);
+
+	fwd.u.input.key = ev->u.input.key;
+	fwd.u.input.pressed = ev->u.input.pressed;
+	line_event_forward(l, &fwd);
+}
+
 /* A tone the detector reported, the fax and modem tones above all, which
  * the protocol's media policy reads (PROTO_EV_TONE). */
 static void tone_forward(struct line *l, const struct hal_event *ev)
@@ -4545,6 +4630,9 @@ void line_hal_event(const struct hal_event *ev)
 		return;
 	case HAL_EVENT_RING_END:
 		ring_end_event(l, ev);
+		return;
+	case HAL_EVENT_INPUT:
+		input_forward(l, ev);
 		return;
 	default:
 		TRACE(TRACE_HOOK, "line %u event type %u ignored", l->index, ev->type);
@@ -5800,6 +5888,7 @@ void lines_start(const struct cfg *cfg)
 	}
 
 	region_take(cfg);
+	audio_tune_take(cfg);
 
 	for (i = 0; i < CFG_CHANNEL_MAX; i++) {
 		struct line *l = &lines[i];
@@ -5869,6 +5958,7 @@ void lines_reload(const struct cfg *cfg)
 
 	/* region_apply is idempotent, so this submits only on a real change */
 	region_take(cfg);
+	audio_tune_take(cfg);
 
 	for (i = 0; i < CFG_CHANNEL_MAX; i++) {
 		struct line *l = &lines[i];

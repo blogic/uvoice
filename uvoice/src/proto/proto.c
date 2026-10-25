@@ -571,12 +571,47 @@ static void host_ubus_request_reply(void *ctx, struct ubus_context *ubus,
 	uvoice_ubus_request_reply(ubus, req, line, verb);
 }
 
+static bool host_reg_state[CFG_CHANNEL_MAX];
+
+static void host_reg_notify(unsigned int line, bool up)
+{
+	const struct cfg_channel *ch;
+	struct blob_buf b = { 0 };
+
+	if (!uv.cfg || line >= CFG_CHANNEL_MAX)
+		return;
+
+	ch = &uv.cfg->channel[line];
+	blob_buf_init(&b, 0);
+	blobmsg_add_u32(&b, "line", line);
+	blobmsg_add_string(&b, "state", up ? "registered" : "unregistered");
+	blobmsg_add_string(&b, "label", ch->sip_callerid_name[0] ?
+					ch->sip_callerid_name :
+					ch->sip_username);
+	uvoice_ubus_notify("registration", b.head);
+	blob_buf_free(&b);
+}
+
 static void host_reg_state_post(void *ctx, unsigned int line, bool up,
 				const char *proxy, bool moved)
 {
 	event_reg_post(line, up, proxy);
 	if (moved)
 		calltrace_event(line, "registration");
+
+	if (line < CFG_CHANNEL_MAX)
+		host_reg_state[line] = up;
+	host_reg_notify(line, up);
+}
+
+static bool host_reg_up(void *ctx, unsigned int line)
+{
+	return line < CFG_CHANNEL_MAX && host_reg_state[line];
+}
+
+static void host_notify(void *ctx, const char *type, struct blob_attr *msg)
+{
+	uvoice_ubus_notify(type, msg);
 }
 
 static void host_tls_cert_start(void *ctx, const char *url,
@@ -762,6 +797,44 @@ static bool host_random_bytes(void *ctx, void *buf, size_t len)
 	return uvoice_random_bytes(buf, len);
 }
 
+static enum hal_status host_audio_path_set(void *ctx, enum hal_audio_path path)
+{
+	return line_audio_path_set(path);
+}
+
+static enum hal_status host_volume_set(void *ctx, unsigned int level)
+{
+	return line_volume_set(level);
+}
+
+static enum hal_status host_mute_set(void *ctx, bool mute)
+{
+	return line_mute_set(mute);
+}
+
+static enum hal_status host_led_set(void *ctx, enum hal_led led,
+				    enum hal_led_mode mode)
+{
+	return line_led_set(led, mode);
+}
+
+static enum hal_status host_audio_tune_set(void *ctx,
+					   const struct hal_audio_tune *tune)
+{
+	return line_audio_tune_set(tune);
+}
+
+static void host_audio_tune_get(void *ctx, struct hal_audio_tune *tune)
+{
+	line_audio_tune_get(tune);
+}
+
+static enum hal_status host_key_tone_play(void *ctx, unsigned int line,
+					  char digit, uint32_t duration_ms)
+{
+	return line_key_tone_play(line, digit, duration_ms);
+}
+
 static struct proto_host host;
 
 void proto_host_build(void)
@@ -801,6 +874,15 @@ void proto_host_build(void)
 	host.hal_cap = host_hal_cap;
 	host.region = host_region;
 	host.conf_set = host_conf_set;
+	host.audio_path_set = host_audio_path_set;
+	host.volume_set = host_volume_set;
+	host.mute_set = host_mute_set;
+	host.led_set = host_led_set;
+	host.audio_tune_set = host_audio_tune_set;
+	host.audio_tune_get = host_audio_tune_get;
+	host.key_tone_play = host_key_tone_play;
+	host.notify = host_notify;
+	host.reg_up = host_reg_up;
 	host.line_fault = host_line_fault;
 	host.trace_active = host_trace_active;
 	host.trace_write = host_trace_write;

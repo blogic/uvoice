@@ -473,6 +473,29 @@ void line_transition(unsigned int line, unsigned int state_id,
 void line_settle(unsigned int line);
 void line_cfg_landed(unsigned int line);
 enum hal_status line_conf_set(unsigned int line, bool on);
+enum hal_status line_audio_path_set(enum hal_audio_path path);
+enum hal_status line_volume_set(unsigned int level);
+enum hal_status line_mute_set(bool mute);
+enum hal_status line_led_set(enum hal_led led, enum hal_led_mode mode);
+
+/**
+ * line_audio_tune_set() - apply the audio tuning of the phone
+ * @tune: the gains and the ring sound
+ *
+ * Keeps @tune as the live tuning and gives it to the backend. A reload puts
+ * back the tuning of the config.
+ *
+ * Return: the status of the backend, or HAL_UNSUPPORTED if it has no tuning.
+ */
+enum hal_status line_audio_tune_set(const struct hal_audio_tune *tune);
+
+/**
+ * line_audio_tune_get() - read the live audio tuning
+ * @tune: filled with the tuning that line_audio_tune_set() kept last
+ */
+void line_audio_tune_get(struct hal_audio_tune *tune);
+enum hal_status line_key_tone_play(unsigned int line, char digit,
+				   uint32_t duration_ms);
 void line_fault(unsigned int line, bool loud, const char *text);
 
 /* The stream ops over the backend, with no priv (proto_host_build sets it). */

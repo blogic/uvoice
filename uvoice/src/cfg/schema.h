@@ -51,6 +51,7 @@ static const char *const cfg_bool_vals[] = { "0", "1", NULL };
 static const char *const cfg_voip_model_vals[] = { "1", "2", NULL };
 static const char *const cfg_transport_vals[] = { "udp", "tcp", "tls", NULL };
 static const char *const cfg_protocol_vals[] = { "sip", "mgcp", NULL };
+static const char *const cfg_ui_vals[] = { "fxs", "desk", NULL };
 /* enum cfg_mgcp_dialect, cfg_mgcp_quarantine and cfg_mgcp_reply order */
 static const char *const cfg_mgcp_dialect_vals[] = { "rfc3435", "ncs", NULL };
 static const char *const cfg_mgcp_quarantine_vals[] = { "step", "loop", NULL };
@@ -61,6 +62,9 @@ static const char *const cfg_tdm_backend_vals[] = {
 	"alsa", "alsa-raw", "file", NULL
 };
 static const char *const cfg_sample_rate_vals[] = { "8000", "16000", NULL };
+static const char *const cfg_ring_sound_vals[] = {
+	"classic", "high", "low", "fast", "slow", "dual", NULL
+};
 static const char *const cfg_restrict_source_vals[] = { "0", "1", "2", NULL };
 static const char *const cfg_digit_esc_vals[] = { "0", "1", "2", NULL };
 static const char *const cfg_local_conf_vals[] = { "0", "1", "2", NULL };
@@ -134,6 +138,8 @@ static const struct cfg_option_desc cfg_base_options[] = {
 	CFG_DESC("transport", CFG_ENUM, "udp", 0, 0, cfg_transport_vals, APPLY_RESTART_ALL, SUP_SUPPORTED, NULL),
 	CFG_DESC("protocol", CFG_ENUM, "sip", 0, 0, cfg_protocol_vals,
 		 APPLY_RESTART_DAEMON, SUP_SUPPORTED, NULL),
+	CFG_DESC("ui", CFG_ENUM, "fxs", 0, 0, cfg_ui_vals,
+		 APPLY_RESTART_DAEMON, SUP_SUPPORTED, NULL),
 	CFG_DESC("srtp_enabled", CFG_BOOL, "0", 0, 1, cfg_bool_vals, APPLY_RESTART_ALL, SUP_SUPPORTED, NULL),
 	CFG_DESC("keepalive_enabled", CFG_BOOL, "1", 0, 1, cfg_bool_vals, APPLY_LIVE, SUP_SUPPORTED, NULL),
 	CFG_DESC("keepalive_interval", CFG_INT, "30", 1, INT_MAX, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
@@ -172,6 +178,13 @@ static const struct cfg_option_desc cfg_hal_options[] = {
 	 * an offset at or above PROSLIC_PCM_SLOT_BITS (16). */
 	CFG_DESC("pcm_offset_bits", CFG_INT, "0", 0, 15, NULL, APPLY_RESTART_ALL, SUP_SUPPORTED, NULL),
 	CFG_DESC("sample_rate", CFG_ENUM, "8000", 8000, 16000, cfg_sample_rate_vals, APPLY_RESTART_ALL, SUP_SUPPORTED, NULL),
+	CFG_DESC("handset_mic_gain", CFG_INT, "24", -4, 52, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("headset_mic_gain", CFG_INT, "28", -4, 52, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("speaker_mic_gain", CFG_INT, "48", -4, 52, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("handset_out_gain", CFG_INT, "0", -30, 6, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("headset_out_gain", CFG_INT, "0", -30, 6, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("ring_sound", CFG_ENUM, "classic", 0, 0, cfg_ring_sound_vals, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("ring_volume", CFG_INT, "5", 0, 8, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
 	{ NULL, CFG_STRING, NULL, 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL }
 };
 

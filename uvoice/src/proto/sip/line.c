@@ -40,8 +40,10 @@
  * update outside IDLE and OOS; a refused view stays pending and every later
  * drain retries it, so the machine picks it up at the next rest state.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <libubox/blobmsg.h>
 #include <libubox/uloop.h>
@@ -54,6 +56,7 @@
 #include "proto/proto_trace.h"
 #include "proto/sip/account.h"
 #include "proto/sip/call.h"
+#include "proto/sip/desk.h"
 #include "proto/sip/features.h"
 #include "proto/sip/fsm.h"
 #include "proto/sip/line.h"
@@ -513,8 +516,21 @@ static bool digit_play_allowed(const struct sip_line *l, unsigned int slot)
 
 /* ---------------------------------------------------------- deferred events */
 
+#define LINE_EV_DESK_KEY	FSM_EV_COUNT
+
+static bool sip_desk_on;
+static unsigned int sip_desk_depth;
+
+static void desk_run(struct sip_line *l, unsigned int ev, uint32_t arg);
+static void desk_ended(unsigned int line, unsigned int slot);
+
 static void line_ev_run(struct sip_line *l, enum fsm_ev ev, uint32_t arg)
 {
+	if (sip_desk_on) {
+		desk_run(l, ev, arg);
+		return;
+	}
+
 	LTRACE(TRACE_FSM, "line %u %s in %s arg %u", l->index, fsm_ev_name(ev),
 	       fsm_state_name(l->fsm.state), arg);
 
@@ -622,7 +638,7 @@ static void line_cfg_apply(struct sip_line *l)
 
 static void line_queue_drain(struct sip_line *l)
 {
-	if (l->fsm_depth)
+	if (l->fsm_depth || sip_desk_depth)
 		return;
 
 	uloop_timeout_cancel(&l->drain);
@@ -661,7 +677,7 @@ static void line_queue_drain(struct sip_line *l)
  */
 static void line_ev_deliver(struct sip_line *l, enum fsm_ev ev, uint32_t arg)
 {
-	if (l->fsm_depth) {
+	if (l->fsm_depth || sip_desk_depth) {
 		line_defer_push(l, ev, arg);
 		return;
 	}
@@ -1766,6 +1782,7 @@ static void cb_ended(unsigned int line, unsigned int slot,
 
 	sip_host->cdr_call_ended(sip_host->ctx, line, slot, info);
 	sip_host->calltrace_event(sip_host->ctx, line, "leg_ended");
+	desk_ended(line, slot);
 }
 
 static const struct call_cb line_call_cb = {
@@ -2717,6 +2734,661 @@ static void latch_dump(struct blob_buf *b, const char *key, const bool *latch)
 	blobmsg_close_array(b, arr);
 }
 
+/* ------------------------------------------------------- the desk phone shell */
+
+_Static_assert(DESK_SLOTS == CALL_SLOTS, "desk slots match the call slots");
+_Static_assert(DESK_LINES == CFG_CHANNEL_MAX, "desk lines match the channels");
+
+#define DESK_DTMF_MS		100
+#define DESK_CLEARING_MS	5000
+#define DESK_INTERDIGIT_MS	3000
+#define DESK_KEY_TONE_MS	100
+
+static struct desk sip_desk;
+static unsigned int sip_desk_ring_line;
+
+static void desk_drain_all(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < CFG_CHANNEL_MAX; i++)
+		line_queue_drain(&sip_lines[i]);
+}
+
+static bool desk_op_slot_free(void *priv, unsigned int line, unsigned int *slot)
+{
+	return call_slot_free(line, slot);
+}
+
+static bool desk_op_dial_ready(void *priv, unsigned int line)
+{
+	return line < CFG_CHANNEL_MAX && sip_lines[line].chan.enabled &&
+	       calls_line_dial_ready(line);
+}
+
+static void desk_op_call_dial(void *priv, unsigned int line, unsigned int slot,
+			      const char *number)
+{
+	op_call_dial(sip_line_get(line), slot, number);
+}
+
+static void desk_op_call_ring(void *priv, unsigned int line, unsigned int slot)
+{
+	op_call_ring(sip_line_get(line), slot);
+}
+
+static void desk_op_call_answer(void *priv, unsigned int line, unsigned int slot)
+{
+	op_call_answer(sip_line_get(line), slot);
+}
+
+static void desk_op_call_reject(void *priv, unsigned int line, unsigned int slot,
+				uint32_t code)
+{
+	op_call_reject(sip_line_get(line), slot, code);
+}
+
+static void desk_op_call_hangup(void *priv, unsigned int line, unsigned int slot)
+{
+	op_call_hangup(sip_line_get(line), slot);
+}
+
+static void desk_op_call_hold(void *priv, unsigned int line, unsigned int slot)
+{
+	op_call_hold(sip_line_get(line), slot);
+}
+
+static void desk_op_call_resume(void *priv, unsigned int line, unsigned int slot)
+{
+	op_call_resume(sip_line_get(line), slot);
+}
+
+static void desk_op_call_dtmf(void *priv, unsigned int line, unsigned int slot,
+			      char digit, uint16_t duration_ms)
+{
+	struct sip_line *l = sip_line_get(line);
+
+	l->fsm_depth++;
+	if (!call_dtmf(line, slot, digit, duration_ms, false))
+		LTRACE(TRACE_FSM, "line %u dtmf '%c' on slot %u refused",
+		       l->index, digit, slot);
+	l->fsm_depth--;
+}
+
+static void desk_op_call_xfer(void *priv, unsigned int line, unsigned int slot,
+			      const char *target)
+{
+	struct sip_line *l = sip_line_get(line);
+	bool ok;
+
+	l->fsm_depth++;
+	ok = call_xfer(line, slot, CALL_XFER_BLIND, target);
+	if (!ok)
+		line_ev_deliver(l, FSM_EV_CALL_XFER_FAIL, slot);
+	l->fsm_depth--;
+}
+
+static void desk_op_call_xfer_consult(void *priv, unsigned int line,
+				      unsigned int referee,
+				      unsigned int replaced)
+{
+	op_call_xfer_consult(sip_line_get(line), referee, replaced);
+}
+
+static void desk_op_conf_set(void *priv, unsigned int line, bool on)
+{
+	op_conf_set(sip_line_get(line), on);
+}
+
+static void desk_op_tone(void *priv, enum hal_tone tone)
+{
+	op_tone(sip_line_get(0), tone);
+}
+
+static void desk_op_key_tone(void *priv, char digit)
+{
+	sip_host->key_tone_play(sip_host->ctx, 0, digit, DESK_KEY_TONE_MS);
+}
+
+static void desk_op_ring_start(void *priv, unsigned int line, unsigned int slot)
+{
+	sip_desk_ring_line = line;
+	op_ring_start(sip_line_get(line), slot);
+}
+
+static void desk_op_ring_stop(void *priv)
+{
+	op_ring_stop(sip_line_get(sip_desk_ring_line));
+}
+
+static void desk_op_ring_preview(void *priv, bool on)
+{
+	if (on)
+		sip_host->ring_start(sip_host->ctx, 0, PROTO_RING_CALL, 0, 0,
+				     NULL);
+	else
+		sip_host->ring_stop(sip_host->ctx, 0);
+}
+
+static void desk_op_audio_path(void *priv, enum hal_audio_path path)
+{
+	sip_host->audio_path_set(sip_host->ctx, path);
+}
+
+static void desk_op_volume(void *priv, unsigned int level)
+{
+	sip_host->volume_set(sip_host->ctx, level);
+}
+
+static void desk_op_mute(void *priv, bool on)
+{
+	sip_host->mute_set(sip_host->ctx, on);
+}
+
+static void desk_op_led(void *priv, enum hal_led led, enum hal_led_mode mode)
+{
+	sip_host->led_set(sip_host->ctx, led, mode);
+}
+
+static void desk_call_blob(struct blob_buf *b, const struct desk_call *c,
+			   unsigned int line, unsigned int slot)
+{
+	unsigned int focus = sip_desk.focus;
+
+	blobmsg_add_u32(b, "call", c->id);
+	blobmsg_add_u32(b, "line", line);
+	blobmsg_add_u32(b, "slot", slot);
+	blobmsg_add_string(b, "state", desk_call_state_name(c->state));
+	blobmsg_add_string(b, "direction", c->inbound ? "in" : "out");
+	blobmsg_add_string(b, "number", c->number);
+	blobmsg_add_string(b, "name", c->name);
+	blobmsg_add_u8(b, "focused", focus != DESK_NONE &&
+				     focus == line * DESK_SLOTS + slot);
+	blobmsg_add_u32(b, "since", c->since);
+	blobmsg_add_u32(b, "connected", c->connected);
+	call_codec_dump(b, line, slot);
+}
+
+static void desk_device_blob(struct blob_buf *b)
+{
+	blobmsg_add_string(b, "path", desk_path_name(sip_desk.path));
+	blobmsg_add_u8(b, "mute", sip_desk.mute);
+	blobmsg_add_u32(b, "volume", sip_desk.path == HAL_AUDIO_NONE ?
+				     sip_desk.ring_volume :
+				     sip_desk.volume[sip_desk.path]);
+	blobmsg_add_u8(b, "dnd", sip_desk.dnd);
+	blobmsg_add_string(b, "state",
+			   desk_state_name(desk_state_get(&sip_desk)));
+}
+
+static void desk_op_call_changed(void *priv, unsigned int line,
+				 unsigned int slot)
+{
+	const struct desk_call *c = desk_call_get(&sip_desk, line, slot);
+	struct blob_buf b = { 0 };
+
+	if (!c || !sip_host->notify)
+		return;
+
+	blob_buf_init(&b, 0);
+	desk_call_blob(&b, c, line, slot);
+	if (c->state == DESK_CALL_IDLE || c->state == DESK_CALL_CLEARING)
+		blobmsg_add_string(&b, "reason",
+				   desk_end_reason_name(c->end_reason));
+	sip_host->notify(sip_host->ctx, "call", b.head);
+	blob_buf_free(&b);
+}
+
+static void desk_op_device_changed(void *priv)
+{
+	struct blob_buf b = { 0 };
+
+	if (!sip_host->notify)
+		return;
+
+	blob_buf_init(&b, 0);
+	desk_device_blob(&b);
+	sip_host->notify(sip_host->ctx, "device", b.head);
+	blob_buf_free(&b);
+}
+
+static uint32_t desk_op_now_s(void *priv)
+{
+	return (uint32_t)time(NULL);
+}
+
+static const struct desk_ops desk_ops = {
+	.slot_free = desk_op_slot_free,
+	.dial_ready = desk_op_dial_ready,
+	.call_dial = desk_op_call_dial,
+	.call_ring = desk_op_call_ring,
+	.call_answer = desk_op_call_answer,
+	.call_reject = desk_op_call_reject,
+	.call_hangup = desk_op_call_hangup,
+	.call_hold = desk_op_call_hold,
+	.call_resume = desk_op_call_resume,
+	.call_dtmf = desk_op_call_dtmf,
+	.call_xfer = desk_op_call_xfer,
+	.call_xfer_consult = desk_op_call_xfer_consult,
+	.conf_set = desk_op_conf_set,
+	.tone = desk_op_tone,
+	.key_tone = desk_op_key_tone,
+	.ring_start = desk_op_ring_start,
+	.ring_stop = desk_op_ring_stop,
+	.ring_preview = desk_op_ring_preview,
+	.audio_path = desk_op_audio_path,
+	.volume = desk_op_volume,
+	.mute = desk_op_mute,
+	.led = desk_op_led,
+	.call_changed = desk_op_call_changed,
+	.device_changed = desk_op_device_changed,
+	.now_s = desk_op_now_s,
+};
+
+static void desk_cfg_build(struct desk_cfg *dcfg)
+{
+	const struct fsm_cfg *f = &sip_lines[0].fcfg;
+	unsigned int i;
+
+	memset(dcfg, 0, sizeof(*dcfg));
+	for (i = 0; i < CFG_CHANNEL_MAX; i++)
+		dcfg->dp[i] = &sip_lines[i].dp;
+	dcfg->lines = CFG_CHANNEL_MAX;
+	dcfg->interdigit_short_ms = DESK_INTERDIGIT_MS;
+	dcfg->interdigit_long_ms = f->interdigit_long_ms;
+	dcfg->start_digit_ms = f->start_digit_ms;
+	dcfg->clearing_ms = DESK_CLEARING_MS;
+	dcfg->dtmf_ms = DESK_DTMF_MS;
+}
+
+static uint32_t desk_fail_of(uint32_t cls)
+{
+	switch (cls) {
+	case CALL_FAIL_BUSY:
+		return DESK_FAIL_BUSY;
+	case CALL_FAIL_UNOBTAINABLE:
+		return DESK_FAIL_UNAVAILABLE;
+	case CALL_FAIL_QUIET:
+		return DESK_FAIL_REJECTED;
+	default:
+		return DESK_FAIL_OTHER;
+	}
+}
+
+static void desk_push(enum desk_ev ev, unsigned int line, unsigned int slot,
+		      uint32_t arg)
+{
+	desk_event_push(&sip_desk, ev, line, slot, arg);
+}
+
+static void desk_incoming(struct sip_line *l, unsigned int slot)
+{
+	const struct line_cid *cid;
+
+	if (slot >= CALL_SLOTS)
+		return;
+
+	cid = &l->cid[slot];
+	desk_caller_set(&sip_desk, l->index, slot,
+			cid->number_private ? "" : cid->number,
+			cid->name_private ? "" : cid->name);
+	desk_push(DESK_EV_CALL_INCOMING, l->index, slot, 0);
+}
+
+static void desk_run(struct sip_line *l, unsigned int ev, uint32_t arg)
+{
+	unsigned int line = l->index;
+
+	LTRACE(TRACE_FSM, "line %u desk event %u arg %u in %s", line, ev, arg,
+	       desk_state_name(desk_state_get(&sip_desk)));
+
+	sip_desk_depth++;
+
+	switch (ev) {
+	case FSM_EV_SEIZE:
+		desk_push(DESK_EV_HOOK_UP, DESK_NONE, DESK_NONE, 0);
+		break;
+	case FSM_EV_RELEASE:
+		desk_push(DESK_EV_HOOK_DOWN, DESK_NONE, DESK_NONE, 0);
+		break;
+	case FSM_EV_DIGIT:
+		desk_push(DESK_EV_DIGIT, DESK_NONE, DESK_NONE, arg);
+		break;
+	case LINE_EV_DESK_KEY:
+		desk_push(DESK_EV_KEY, DESK_NONE, DESK_NONE, arg);
+		break;
+	case FSM_EV_CALL_INCOMING:
+		desk_incoming(l, arg);
+		break;
+	case FSM_EV_CALL_PROCEEDING:
+		desk_push(DESK_EV_CALL_PROCEEDING, line, arg >> 1, arg & 1);
+		break;
+	case FSM_EV_CALL_ANSWERED:
+		desk_push(DESK_EV_CALL_ANSWERED, line, arg, 0);
+		break;
+	case FSM_EV_CALL_FAILED:
+		desk_push(DESK_EV_CALL_FAILED, line, arg >> 8,
+			  desk_fail_of(arg & 0xff));
+		break;
+	case FSM_EV_CALL_REMOTE_BYE:
+		desk_push(DESK_EV_CALL_REMOTE_BYE, line, arg, 0);
+		break;
+	case FSM_EV_CALL_REMOTE_CANCEL:
+		desk_push(DESK_EV_CALL_REMOTE_CANCEL, line, arg, 0);
+		break;
+	case FSM_EV_CALL_REINVITE_OK:
+		desk_push(DESK_EV_CALL_REINVITE_OK, line, arg, 0);
+		break;
+	case FSM_EV_CALL_REINVITE_FAIL:
+		desk_push(DESK_EV_CALL_REINVITE_FAIL, line, arg, 0);
+		break;
+	case FSM_EV_CALL_XFER_OK:
+		desk_push(DESK_EV_CALL_XFER_OK, line, arg, 0);
+		break;
+	case FSM_EV_CALL_XFER_FAIL:
+		desk_push(DESK_EV_CALL_XFER_FAIL, line, arg, 0);
+		break;
+	default:
+		break;
+	}
+
+	sip_desk_depth--;
+	desk_drain_all();
+}
+
+static void desk_ended(unsigned int line, unsigned int slot)
+{
+	if (!sip_desk_on || slot >= CALL_SLOTS)
+		return;
+
+	sip_desk_depth++;
+	desk_push(DESK_EV_CALL_ENDED, line, slot, 0);
+	sip_desk_depth--;
+	desk_drain_all();
+}
+
+static void desk_key_take(struct sip_line *l, const struct proto_line_event *ev)
+{
+	if (!sip_desk_on || !ev->u.input.pressed)
+		return;
+
+	line_ev_deliver(l, LINE_EV_DESK_KEY, ev->u.input.key);
+}
+
+static bool desk_find(uint32_t id, unsigned int *line, unsigned int *slot)
+{
+	const struct desk_call *c;
+	unsigned int l, s;
+
+	if (!id)
+		return false;
+
+	for (l = 0; l < DESK_LINES; l++) {
+		for (s = 0; s <= DESK_DIAL_SLOT; s++) {
+			c = desk_call_get(&sip_desk, l, s);
+			if (c && c->state != DESK_CALL_IDLE && c->id == id) {
+				*line = l;
+				*slot = s;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static void desk_verb_enter(void)
+{
+	sip_desk_depth++;
+}
+
+static int desk_verb_exit(int ret)
+{
+	sip_desk_depth--;
+	desk_drain_all();
+
+	return ret;
+}
+
+bool sip_desk_active(void)
+{
+	return sip_desk_on;
+}
+
+int sip_desk_dial(unsigned int line, const char *number, uint32_t *id)
+{
+	const struct desk_call *c;
+	unsigned int s;
+	int ret;
+
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	ret = desk_dial(&sip_desk, line, number);
+	if (!ret && line < DESK_LINES) {
+		for (s = 0; s < DESK_SLOTS; s++) {
+			c = desk_call_get(&sip_desk, line, s);
+			if (c && c->state != DESK_CALL_IDLE &&
+			    sip_desk.focus == line * DESK_SLOTS + s)
+				*id = c->id;
+		}
+	}
+
+	return desk_verb_exit(ret);
+}
+
+#define DESK_VERB_ID(name, call)					\
+int sip_desk_##name(uint32_t id)					\
+{									\
+	unsigned int line, slot;					\
+									\
+	if (!sip_desk_on)						\
+		return -ENOTSUP;					\
+	if (!desk_find(id, &line, &slot))				\
+		return -ENOENT;						\
+									\
+	desk_verb_enter();						\
+	return desk_verb_exit(call(&sip_desk, line, slot));		\
+}
+
+DESK_VERB_ID(reject, desk_reject)
+DESK_VERB_ID(hangup, desk_hangup)
+DESK_VERB_ID(hold, desk_hold)
+DESK_VERB_ID(resume, desk_resume)
+
+int sip_desk_answer(uint32_t id, enum hal_audio_path path)
+{
+	unsigned int line, slot;
+
+	if (!sip_desk_on)
+		return -ENOTSUP;
+	if (!desk_find(id, &line, &slot))
+		return -ENOENT;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_answer(&sip_desk, line, slot, path));
+}
+
+int sip_desk_transfer(uint32_t id, const char *target)
+{
+	unsigned int line, slot;
+
+	if (!sip_desk_on)
+		return -ENOTSUP;
+	if (!desk_find(id, &line, &slot))
+		return -ENOENT;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_transfer(&sip_desk, line, slot, target));
+}
+
+int sip_desk_transfer_attended(uint32_t id, uint32_t id2)
+{
+	unsigned int line, slot, line2, slot2;
+
+	if (!sip_desk_on)
+		return -ENOTSUP;
+	if (!desk_find(id, &line, &slot) || !desk_find(id2, &line2, &slot2))
+		return -ENOENT;
+	if (line != line2)
+		return -EINVAL;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_transfer_attended(&sip_desk, line, slot,
+						     slot2));
+}
+
+int sip_desk_conference(uint32_t id, uint32_t id2)
+{
+	unsigned int line, slot, line2, slot2;
+
+	if (!sip_desk_on)
+		return -ENOTSUP;
+	if (!desk_find(id, &line, &slot) || !desk_find(id2, &line2, &slot2))
+		return -ENOENT;
+	if (line != line2)
+		return -EINVAL;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_conference(&sip_desk, line, slot, slot2));
+}
+
+int sip_desk_dtmf(char digit)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_dtmf(&sip_desk, digit));
+}
+
+int sip_desk_mute(bool on)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_mute_set(&sip_desk, on));
+}
+
+int sip_desk_audio(enum hal_audio_path path)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_audio_set(&sip_desk, path));
+}
+
+int sip_desk_volume(unsigned int level)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_volume_set(&sip_desk, level));
+}
+
+int sip_desk_missed(bool on)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	desk_missed_set(&sip_desk, on);
+	return desk_verb_exit(0);
+}
+
+int sip_desk_ring_volume_set(unsigned int level)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_ring_volume_set(&sip_desk, level));
+}
+
+unsigned int sip_desk_ring_volume_get(void)
+{
+	return desk_ring_volume_get(&sip_desk);
+}
+
+int sip_desk_ring_preview(uint32_t duration_ms)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	return desk_verb_exit(desk_ring_preview(&sip_desk, duration_ms));
+}
+
+int sip_desk_ring_preview_stop(void)
+{
+	if (!sip_desk_on)
+		return -ENOTSUP;
+
+	desk_verb_enter();
+	desk_ring_preview_stop(&sip_desk);
+	return desk_verb_exit(0);
+}
+
+void sip_desk_reload(const struct cfg *cfg)
+{
+	if (sip_desk_on)
+		sip_desk_ring_volume_set(cfg->hal.ring_volume);
+}
+
+void sip_desk_calls_dump(struct blob_buf *b)
+{
+	const struct desk_call *c;
+	unsigned int l, s;
+	void *arr, *tbl;
+
+	arr = blobmsg_open_array(b, "calls");
+	for (l = 0; l < DESK_LINES; l++) {
+		for (s = 0; s <= DESK_DIAL_SLOT; s++) {
+			c = desk_call_get(&sip_desk, l, s);
+			if (!c || c->state == DESK_CALL_IDLE)
+				continue;
+			tbl = blobmsg_open_table(b, NULL);
+			desk_call_blob(b, c, l, s);
+			blobmsg_close_table(b, tbl);
+		}
+	}
+	blobmsg_close_array(b, arr);
+
+	tbl = blobmsg_open_table(b, "device");
+	desk_device_blob(b);
+	blobmsg_close_table(b, tbl);
+}
+
+void sip_desk_accounts_dump(struct blob_buf *b)
+{
+	unsigned int i;
+	void *arr, *tbl;
+
+	arr = blobmsg_open_array(b, "accounts");
+	for (i = 0; i < CFG_CHANNEL_MAX; i++) {
+		const struct sip_line *l = &sip_lines[i];
+
+		if (!l->chan.enabled)
+			continue;
+
+		tbl = blobmsg_open_table(b, NULL);
+		blobmsg_add_u32(b, "line", i);
+		blobmsg_add_string(b, "label", l->chan.sip_callerid_name[0] ?
+					       l->chan.sip_callerid_name :
+					       l->chan.sip_username);
+		blobmsg_add_string(b, "user", l->chan.sip_username);
+		blobmsg_add_u8(b, "registered",
+			       sip_host->reg_up &&
+			       sip_host->reg_up(sip_host->ctx, i));
+		blobmsg_close_table(b, tbl);
+	}
+	blobmsg_close_array(b, arr);
+}
+
 /* ------------------------------------------ the entries of proto/sip/line.h */
 
 /*
@@ -2743,6 +3415,16 @@ void sip_lines_init(const struct proto_host *host, const struct cfg *cfg)
 		feature_state_init(&l->features, &l->chan);
 		line_cfg_derive(l, cfg, &l->dp, &l->fcfg);
 		fsm_init(&l->fsm, i, &line_env, &l->fcfg, &line_ops, l);
+	}
+
+	sip_desk_on = cfg_ui_desk(cfg);
+	sip_desk_depth = 0;
+	if (sip_desk_on) {
+		struct desk_cfg dcfg;
+
+		desk_cfg_build(&dcfg);
+		desk_init(&sip_desk, &line_env, &dcfg, &desk_ops, NULL);
+		desk_ring_volume_set(&sip_desk, cfg->hal.ring_volume);
 	}
 }
 
@@ -2844,6 +3526,9 @@ void sip_line_event(unsigned int line, const struct proto_line_event *ev)
 		return;
 	case PROTO_EV_FIRST_RTP:
 		rtp_first_rx_event(l, ev);
+		return;
+	case PROTO_EV_INPUT:
+		desk_key_take(l, ev);
 		return;
 	case PROTO_EV_RING_END:
 	case PROTO_EV_LINE_STATE:
@@ -3001,8 +3686,12 @@ void sip_line_mwi_push(unsigned int line)
 {
 	struct sip_line *l = sip_line_get(line);
 
-	if (l)
-		fsm_mwi_set(&l->fsm, mwi_audible(l));
+	if (!l)
+		return;
+
+	fsm_mwi_set(&l->fsm, mwi_audible(l));
+	if (sip_desk_on)
+		desk_mwi_set(&sip_desk, mwi_stored(l));
 }
 
 /*
