@@ -111,4 +111,96 @@ static inline void media_tos_apply(int fd, int family, uint8_t want,
 		*have = want;
 }
 
+/* The socket family of a hal_addr: AF_INET6 for version 6, AF_INET otherwise.
+ * A caller validates the version first (hal_media_validate_addrs). */
+static inline int addr_family(const struct hal_addr *a)
+{
+	return a->ipver == 6 ? AF_INET6 : AF_INET;
+}
+
+/* The two versions a hal_addr record defines. Any other value names no family,
+ * so no socket can hold it. */
+static inline bool ipver_known(uint8_t v)
+{
+	return v == 4 || v == 6;
+}
+
+/*
+ * A DSCP a backend has not successfully put on a socket yet. Outside the 0..63
+ * a DSCP can hold, so "nothing is on this socket" can never read as a value a
+ * description asked for: a mark that failed must leave the record saying so, or
+ * the same-value early return of media_tos_apply would decide the socket is
+ * already marked and never try again.
+ */
+#define HAL_MEDIA_DSCP_NONE		0xffu
+
+/*
+ * The media sockets of one stream, owned by a backend that makes its own
+ * descriptors (hal.h stream_config_set). It carries no backend engine type, so
+ * either backend embeds it in its own stream record beside the engine state.
+ *
+ * rtp_fd and rtcp_fd are -1 when the stream holds no pair; a caller sets them
+ * with hal_media_sock_init before any op runs, because a calloc zero would name
+ * descriptor 0. local, remote and rtcp_remote say what the sockets carry, and
+ * bind_dev is part of that local identity (SO_BINDTODEVICE). rtp_dscp and
+ * rtcp_dscp are HAL_MEDIA_DSCP_NONE until a mark actually reaches the socket.
+ */
+struct hal_media_sock {
+	int rtp_fd;
+	int rtcp_fd;
+	struct hal_addr local;
+	struct hal_addr remote;
+	struct hal_addr rtcp_remote;
+	char bind_dev[HAL_IFNAME_MAX];
+	uint8_t rtp_dscp;
+	uint8_t rtcp_dscp;
+};
+
+/* IP_TOS for AF_INET, IPV6_TCLASS for AF_INET6, computed (dscp << 2) from the
+ * 0..63 DSCP hal_media carries. 0 when the mark reached the socket. */
+int hal_media_dscp_mark(int fd, int family, uint8_t dscp);
+
+/* Set a stream's pair to "no sockets". */
+void hal_media_sock_init(struct hal_media_sock *s);
+
+/* Close both descriptors and set the pair to "no sockets". A backend calls its
+ * engine's stream stop first, because the engine holds dups of these. */
+void hal_media_sock_close(struct hal_media_sock *s);
+
+/* The RTCP peer of one description: the far end's own RTCP address when its
+ * a=rtcp named one (RFC 3605 2.1), and the media address otherwise. */
+void hal_media_rtcp_peer(const struct hal_media *m, struct hal_addr *out);
+
+/*
+ * Open, bind and mark a fresh pair for @m, recording the local identity and the
+ * marks in @s. The far end is connected by hal_media_sock_connect. Returns
+ * HAL_OK, or HAL_FATAL with the pair closed again.
+ */
+enum hal_status hal_media_sock_open(struct hal_media_sock *s,
+				    const struct hal_media *m);
+
+/* Re-apply the DSCP marks of @m to a pair that a program kept (no rebind). */
+void hal_media_sock_tos_refresh(struct hal_media_sock *s,
+				const struct hal_media *m);
+
+/*
+ * Connect the pair to the far end of @m and record both peers. Returns HAL_OK,
+ * or HAL_FATAL (the caller owns the standing pair).
+ */
+enum hal_status hal_media_sock_connect(struct hal_media_sock *s,
+				       const struct hal_media *m);
+
+/*
+ * The address checks of hal.h stream_config_set rule 4, with no engine
+ * capability in them: the versions are known and equal across the two ends and
+ * any separate RTCP address, the local and remote ports are nonzero, and the
+ * derived RTCP ports do not wrap to zero. @features carries the backend's
+ * hal_feature bits; an IPv6 description is refused unless HAL_FEAT_IPV6_MEDIA is
+ * set. Returns HAL_OK, HAL_UNSUPPORTED (a shape the backend cannot carry) or
+ * HAL_FATAL (a description the core should never have built). The codec and
+ * SRTP capability checks stay with the backend, which asks its engine.
+ */
+enum hal_status hal_media_validate_addrs(const struct hal_media *m,
+					 uint32_t features);
+
 #endif

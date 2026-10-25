@@ -585,7 +585,7 @@ static bool hw_inject(struct probe *p, uint16_t seq)
 	ev.seq = seq;
 	ev.u.hook.state = HAL_HOOK_FLASH;
 
-	return send(p->h->lib_fd, &ev, sizeof(ev), MSG_DONTWAIT | MSG_NOSIGNAL) ==
+	return send(p->h->relay.lib_fd, &ev, sizeof(ev), MSG_DONTWAIT | MSG_NOSIGNAL) ==
 	       (ssize_t)sizeof(ev);
 }
 
@@ -615,8 +615,8 @@ static void pump_nothing(struct uloop_fd *ufd, unsigned int events)
  */
 static void probe_watch_drop(struct probe *p)
 {
-	if (p->h->core_out.registered)
-		uloop_fd_delete(&p->h->core_out);
+	if (p->h->relay.core_out.registered)
+		uloop_fd_delete(&p->h->relay.core_out);
 }
 
 /* Turns the loop, without reading the core fd, until the backend holds want
@@ -625,7 +625,7 @@ static void queue_wait(struct probe *p, unsigned int want, unsigned int ms)
 {
 	uint64_t stop = mono_us() + (uint64_t)ms * 1000u;
 
-	while (p->h->comp_len < want && mono_us() < stop)
+	while (p->h->relay.comp_len < want && mono_us() < stop)
 		uloop_pump(5);
 }
 
@@ -635,7 +635,7 @@ static void queue_empty_wait(struct probe *p, unsigned int ms)
 {
 	uint64_t stop = mono_us() + (uint64_t)ms * 1000u;
 
-	while (p->h->comp_len && mono_us() < stop)
+	while (p->h->relay.comp_len && mono_us() < stop)
 		uloop_pump(5);
 }
 
@@ -2866,13 +2866,13 @@ static void test_completion_queue(void)
 	CASE("a library completion the full core fd refuses is retained");
 	CHECK(hal_backend_ops.region_apply(p.h, "GBR", &region) == HAL_OK);
 	queue_wait(&p, 1, 5000);
-	CHECK_UINT(p.h->comp_len, 1);
+	CHECK_UINT(p.h->relay.comp_len, 1);
 
 	CASE("and it reaches the core once the core has read");
 	probe_discard(&p);
 	CHECK(job_wait(&p, region.token, 5000, &status, NULL));
 	CHECK_UINT(status, HAL_OK);
-	CHECK_UINT(p.h->comp_len, 0);
+	CHECK_UINT(p.h->relay.comp_len, 0);
 
 	/* The order is the jobs' own. The core matches a completion to a
 	 * pending job by token, but a queue that drained newest first would
@@ -2886,7 +2886,7 @@ static void test_completion_queue(void)
 	queue_wait(&p, 1, 5000);
 	CHECK(hal_backend_ops.region_apply(p.h, "GBR", &second) == HAL_OK);
 	queue_wait(&p, 2, 5000);
-	CHECK_UINT(p.h->comp_len, 2);
+	CHECK_UINT(p.h->relay.comp_len, 2);
 
 	CASE("and the core reads them oldest first");
 	probe_discard(&p);
@@ -2901,8 +2901,8 @@ static void test_completion_queue(void)
 	CASE("the bring-up completion the chain posts is retained too");
 	CHECK(hal_backend_ops.dsp_start(p.h, &start) == HAL_OK);
 	queue_wait(&p, 1, 5000);
-	CHECK_UINT(p.h->comp_len, 1);
-	stamp = p.h->comp[p.h->comp_head].stamp_ms;
+	CHECK_UINT(p.h->relay.comp_len, 1);
+	stamp = p.h->relay.comp[p.h->relay.comp_head].stamp_ms;
 
 	/* The stamp is the moment the completion was made, and the queue is
 	 * not part of that moment: a record restamped on the way out would
@@ -2912,7 +2912,7 @@ static void test_completion_queue(void)
 	probe_discard(&p);
 	CHECK(job_wait(&p, start.token, 5000, &status, NULL));
 	CHECK_UINT(status, HAL_OK);
-	CHECK_UINT(p.h->comp_len, 0);
+	CHECK_UINT(p.h->relay.comp_len, 0);
 	done = job_done_index(&p, start.token);
 	CHECK(done >= 0);
 	if (done >= 0)
@@ -2974,7 +2974,7 @@ static void test_completion_priority(void)
 
 	CHECK(hal_backend_ops.region_apply(p.h, "GBR", &first) == HAL_OK);
 	queue_wait(&p, 1, 5000);
-	CHECK_UINT(p.h->comp_len, 1);
+	CHECK_UINT(p.h->relay.comp_len, 1);
 	probe_watch_drop(&p);
 
 	/* Room for both records, and a hardware event that arrives wanting
@@ -2983,7 +2983,7 @@ static void test_completion_priority(void)
 	CHECK_UINT(probe_take(&p, 2), 2);
 	CHECK(hw_inject(&p, 4242));
 	uloop_pump(50);
-	CHECK_UINT(p.h->comp_len, 0);
+	CHECK_UINT(p.h->relay.comp_len, 0);
 	probe_collect(&p);
 	CHECK(job_done_index(&p, first.token) >= 0);
 	CHECK(hw_index(&p, 4242) >= 0);
@@ -2997,7 +2997,7 @@ static void test_completion_priority(void)
 	queue_wait(&p, 1, 5000);
 	CHECK(hal_backend_ops.region_apply(p.h, "GBR", &second) == HAL_OK);
 	queue_wait(&p, 2, 5000);
-	CHECK_UINT(p.h->comp_len, 2);
+	CHECK_UINT(p.h->relay.comp_len, 2);
 	probe_watch_drop(&p);
 	hal_backend_ops.counters_get(p.h, &before);
 
@@ -3005,7 +3005,7 @@ static void test_completion_priority(void)
 	CHECK_UINT(probe_take(&p, 1), 1);
 	CHECK(hw_inject(&p, 4343));
 	uloop_pump(50);
-	CHECK_UINT(p.h->comp_len, 1);
+	CHECK_UINT(p.h->relay.comp_len, 1);
 	hal_backend_ops.counters_get(p.h, &after);
 	CHECK(after.events_dropped > before.events_dropped);
 	/* The queue held both completions rather than losing one, so the class
@@ -3046,13 +3046,13 @@ static void test_completion_watch_failure(void)
 	CHECK(probe_fill(&p) > 0);
 	CHECK(hal_backend_ops.region_apply(p.h, "GBR", &region) == HAL_OK);
 	queue_wait(&p, 1, 5000);
-	CHECK_UINT(p.h->comp_len, 1);
-	CHECK(!p.h->core_out.registered);
+	CHECK_UINT(p.h->relay.comp_len, 1);
+	CHECK(!p.h->relay.core_out.registered);
 
 	CASE("the retry timer carries the completion the watcher could not");
 	probe_discard(&p);
 	queue_empty_wait(&p, 3000);
-	CHECK_UINT(p.h->comp_len, 0);
+	CHECK_UINT(p.h->relay.comp_len, 0);
 	CHECK(job_wait(&p, region.token, 5000, &status, NULL));
 	CHECK_UINT(status, HAL_OK);
 
@@ -3101,7 +3101,7 @@ static void test_rt_surfaces(void)
 
 static void test_counter_surfaces(void)
 {
-	struct hal_job region[HAL_UDSP_COMP_MAX + 1];
+	struct hal_job region[HAL_RELAY_COMP_MAX + 1];
 	struct hal_counters before, after;
 	struct udsp_counters lib_before, lib_after;
 	unsigned int i;
@@ -3174,18 +3174,18 @@ static void test_counter_surfaces(void)
 	 * before it already completed, whatever depth the library's own job
 	 * queue has. */
 	memset(region, 0, sizeof(region));
-	for (i = 0; i < HAL_UDSP_COMP_MAX; i++) {
+	for (i = 0; i < HAL_RELAY_COMP_MAX; i++) {
 		CHECK(hal_backend_ops.region_apply(p.h, "USA", &region[i]) ==
 		      HAL_OK);
 		queue_wait(&p, i + 1, 5000);
 	}
 
 	CASE("the completion queue fills to its whole depth");
-	CHECK_UINT(p.h->comp_len, HAL_UDSP_COMP_MAX);
+	CHECK_UINT(p.h->relay.comp_len, HAL_RELAY_COMP_MAX);
 
 	CASE("the completion the full queue cannot hold is counted lost");
 	CHECK(hal_backend_ops.region_apply(p.h, "GBR",
-					   &region[HAL_UDSP_COMP_MAX]) == HAL_OK);
+					   &region[HAL_RELAY_COMP_MAX]) == HAL_OK);
 	lost_wait(&p, before.completions_lost + 1u, 5000);
 	hal_backend_ops.counters_get(p.h, &after);
 	udsp_counters(p.h->s, &lib_after);
@@ -3200,7 +3200,7 @@ static void test_counter_surfaces(void)
 	      lib_after.events_sent - lib_before.events_sent);
 
 	CASE("and the queue still holds every completion it accepted");
-	CHECK_UINT(p.h->comp_len, HAL_UDSP_COMP_MAX);
+	CHECK_UINT(p.h->relay.comp_len, HAL_RELAY_COMP_MAX);
 
 	probe_discard(&p);
 	queue_empty_wait(&p, 5000);
@@ -3853,20 +3853,20 @@ static void test_dscp_mark(void)
 		/* DSCP 46 is EF and the TOS byte is 0xb8, which is the 184 the
 		 * shipped rtp_tos option carries. */
 		CASE("an AF_INET socket takes the dscp as IP_TOS, dscp shifted by two");
-		CHECK(hal_udsp_dscp_mark(v4, AF_INET, 46) == 0);
+		CHECK(hal_media_dscp_mark(v4, AF_INET, 46) == 0);
 		CHECK_UINT(tos_get(v4, AF_INET), 46 << 2);
 		CHECK_UINT(tos_get(v4, AF_INET), 184);
 
 		CASE("the two low bits of the tos byte are never set from a dscp");
-		CHECK(hal_udsp_dscp_mark(v4, AF_INET, 63) == 0);
+		CHECK(hal_media_dscp_mark(v4, AF_INET, 63) == 0);
 		CHECK_UINT(tos_get(v4, AF_INET), 0xfc);
-		CHECK(hal_udsp_dscp_mark(v4, AF_INET, 0) == 0);
+		CHECK(hal_media_dscp_mark(v4, AF_INET, 0) == 0);
 		CHECK_UINT(tos_get(v4, AF_INET), 0);
 	}
 
 	CASE("an AF_INET6 socket takes the same dscp as IPV6_TCLASS");
 	if (v6 >= 0) {
-		CHECK(hal_udsp_dscp_mark(v6, AF_INET6, 46) == 0);
+		CHECK(hal_media_dscp_mark(v6, AF_INET6, 46) == 0);
 		CHECK_UINT(tos_get(v6, AF_INET6), 184);
 	} else {
 		/* A host with no IPv6 at all cannot answer this. The skip
@@ -3879,7 +3879,7 @@ static void test_dscp_mark(void)
 	}
 
 	CASE("a descriptor that is not a socket refuses the mark");
-	CHECK(hal_udsp_dscp_mark(-1, AF_INET, 46) != 0);
+	CHECK(hal_media_dscp_mark(-1, AF_INET, 46) != 0);
 
 	if (v4 >= 0)
 		close(v4);
@@ -3914,8 +3914,8 @@ static void test_media_stream(void)
 	CASE("a stream configures through the library with backend-owned sockets");
 	CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) == HAL_OK);
 
-	rtp_fd = stream_rec(&p, 0, 0)->rtp_fd;
-	rtcp_fd = stream_rec(&p, 0, 0)->rtcp_fd;
+	rtp_fd = stream_rec(&p, 0, 0)->sock.rtp_fd;
+	rtcp_fd = stream_rec(&p, 0, 0)->sock.rtcp_fd;
 
 	CASE("the backend owns both descriptors and bound the advertised pair");
 	CHECK(fd_live(rtp_fd) && fd_live(rtcp_fd));
@@ -3943,11 +3943,11 @@ static void test_media_stream(void)
 	 * below is what a case can hold.
 	 */
 	CASE("the recorded mark is the value that reached the socket");
-	CHECK_UINT(stream_rec(&p, 0, 0)->sock_rtp_dscp, 46);
-	CHECK_UINT(stream_rec(&p, 0, 0)->sock_rtcp_dscp, 46);
+	CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtp_dscp, 46);
+	CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtcp_dscp, 46);
 
 	CASE("the unmarked sentinel cannot be mistaken for a dscp a caller asked for");
-	CHECK(HAL_UDSP_DSCP_NONE > 63);
+	CHECK(HAL_MEDIA_DSCP_NONE > 63);
 
 	/* hal.h stream_start: the daemon holds the sockets open for the whole
 	 * life of the stream, so the port cannot come back while it runs. */
@@ -3988,8 +3988,8 @@ static void test_media_stream(void)
 	CASE("the originals close behind the library stop, and the record clears");
 	CHECK(!fd_live(rtp_fd));
 	CHECK(!fd_live(rtcp_fd));
-	CHECK(stream_rec(&p, 0, 0)->rtp_fd == -1);
-	CHECK(stream_rec(&p, 0, 0)->rtcp_fd == -1);
+	CHECK(stream_rec(&p, 0, 0)->sock.rtp_fd == -1);
+	CHECK(stream_rec(&p, 0, 0)->sock.rtcp_fd == -1);
 
 	CASE("and the media ports come back, so neither side leaked a dup");
 	CHECK(port_free(w.family, w.local));
@@ -3998,8 +3998,8 @@ static void test_media_stream(void)
 	/* A released pair carries no mark, so the next pair on this stream
 	 * marks from scratch instead of trusting a number the old socket had. */
 	CASE("the released pair goes back to the unmarked sentinel");
-	CHECK_UINT(stream_rec(&p, 0, 0)->sock_rtp_dscp, HAL_UDSP_DSCP_NONE);
-	CHECK_UINT(stream_rec(&p, 0, 0)->sock_rtcp_dscp, HAL_UDSP_DSCP_NONE);
+	CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtp_dscp, HAL_MEDIA_DSCP_NONE);
+	CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtcp_dscp, HAL_MEDIA_DSCP_NONE);
 
 	CASE("a stopped stream must be configured again before it can start");
 	CHECK(hal_backend_ops.stream_start(p.h, 0, 0) == HAL_FATAL);
@@ -4051,8 +4051,8 @@ static void test_media_v6_stream(void)
 		wire_local_release(&w);
 		CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) ==
 		      HAL_OK);
-		rtp_fd = stream_rec(&p, 0, 0)->rtp_fd;
-		rtcp_fd = stream_rec(&p, 0, 0)->rtcp_fd;
+		rtp_fd = stream_rec(&p, 0, 0)->sock.rtp_fd;
+		rtcp_fd = stream_rec(&p, 0, 0)->sock.rtcp_fd;
 	}
 
 	CASE("the backend owns both v6 descriptors and bound the advertised "
@@ -4072,8 +4072,8 @@ static void test_media_v6_stream(void)
 	if (v6_run(why)) {
 		CHECK_UINT(tos_get(rtp_fd, AF_INET6), 184);
 		CHECK_UINT(tos_get(rtcp_fd, AF_INET6), 184);
-		CHECK_UINT(stream_rec(&p, 0, 0)->sock_rtp_dscp, 46);
-		CHECK_UINT(stream_rec(&p, 0, 0)->sock_rtcp_dscp, 46);
+		CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtp_dscp, 46);
+		CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtcp_dscp, 46);
 	}
 
 	/*
@@ -4097,16 +4097,16 @@ static void test_media_v6_stream(void)
 		memset(m.local.addr, 0, sizeof(m.local.addr));
 		CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) ==
 		      HAL_OK);
-		CHECK_UINT(v6only_get(stream_rec(&p, 0, 0)->rtp_fd), 1);
-		CHECK_UINT(v6only_get(stream_rec(&p, 0, 0)->rtcp_fd), 1);
+		CHECK_UINT(v6only_get(stream_rec(&p, 0, 0)->sock.rtp_fd), 1);
+		CHECK_UINT(v6only_get(stream_rec(&p, 0, 0)->sock.rtcp_fd), 1);
 
 		/* Back to the advertised address, so the cases below run on
 		 * the pair the description names. */
 		memcpy(m.local.addr, named, sizeof(named));
 		CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) ==
 		      HAL_OK);
-		rtp_fd = stream_rec(&p, 0, 0)->rtp_fd;
-		rtcp_fd = stream_rec(&p, 0, 0)->rtcp_fd;
+		rtp_fd = stream_rec(&p, 0, 0)->sock.rtp_fd;
+		rtcp_fd = stream_rec(&p, 0, 0)->sock.rtcp_fd;
 		CHECK(peer_is(rtp_fd, "::1", w.port));
 	}
 
@@ -4141,8 +4141,8 @@ static void test_media_v6_stream(void)
 		m.remote.port = w2.port;
 		CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) ==
 		      HAL_OK);
-		CHECK_UINT(stream_rec(&p, 0, 0)->rtp_fd, rtp_fd);
-		CHECK_UINT(stream_rec(&p, 0, 0)->rtcp_fd, rtcp_fd);
+		CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtp_fd, rtp_fd);
+		CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtcp_fd, rtcp_fd);
 		CHECK(peer_is(rtp_fd, "::1", w2.port));
 		CHECK(peer_is(rtcp_fd, "::1", (uint16_t)(w2.port + 1u)));
 
@@ -4218,14 +4218,14 @@ static void test_media_rtcp_addr(void)
 	CHECK(alt >= 0);
 	CHECK(alt_port != 0);
 	CHECK(media_up(&p, &w, &m));
-	rtp_fd = stream_rec(&p, 0, 0)->rtp_fd;
-	CHECK(peer_is(stream_rec(&p, 0, 0)->rtcp_fd, "127.0.0.1", alt_port));
+	rtp_fd = stream_rec(&p, 0, 0)->sock.rtp_fd;
+	CHECK(peer_is(stream_rec(&p, 0, 0)->sock.rtcp_fd, "127.0.0.1", alt_port));
 	m.rtcp_remote.ipver = 4;
 	CHECK(inet_pton(AF_INET, WIRE_ALT_ADDR, m.rtcp_remote.addr) == 1);
 	CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) == HAL_OK);
-	CHECK(peer_is(stream_rec(&p, 0, 0)->rtcp_fd, WIRE_ALT_ADDR, alt_port));
+	CHECK(peer_is(stream_rec(&p, 0, 0)->sock.rtcp_fd, WIRE_ALT_ADDR, alt_port));
 	/* An RTCP move is not a local move, so the same pair carries it. */
-	CHECK_UINT(stream_rec(&p, 0, 0)->rtp_fd, rtp_fd);
+	CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtp_fd, rtp_fd);
 
 	/*
 	 * The wire half. The library clamps the interval to UDSP_RTCP_MIN_MS,
@@ -4340,8 +4340,8 @@ static void test_media_reconfig(void)
 
 	CASE("the stream comes up on the first far end");
 	CHECK(media_up(&p, &w, &m));
-	rtp_fd = stream_rec(&p, 0, 0)->rtp_fd;
-	rtcp_fd = stream_rec(&p, 0, 0)->rtcp_fd;
+	rtp_fd = stream_rec(&p, 0, 0)->sock.rtp_fd;
+	rtcp_fd = stream_rec(&p, 0, 0)->sock.rtcp_fd;
 	probe_wait(&p, 300);
 	wire_drain(&w, &seen);
 	CHECK(seen.packets > 0);
@@ -4358,8 +4358,8 @@ static void test_media_reconfig(void)
 	CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) == HAL_OK);
 
 	CASE("the same descriptors carry it, because the local pair did not move");
-	CHECK_UINT(stream_rec(&p, 0, 0)->rtp_fd, rtp_fd);
-	CHECK_UINT(stream_rec(&p, 0, 0)->rtcp_fd, rtcp_fd);
+	CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtp_fd, rtp_fd);
+	CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtcp_fd, rtcp_fd);
 	CHECK(fd_live(rtp_fd) && fd_live(rtcp_fd));
 
 	CASE("the new mark reaches the descriptors the library already dup'd");
@@ -4394,7 +4394,7 @@ static void test_media_reconfig(void)
 	 */
 	CASE("a bind device change alone takes a new pair, like any local move");
 	{
-		int before = stream_rec(&p, 0, 0)->rtp_fd;
+		int before = stream_rec(&p, 0, 0)->sock.rtp_fd;
 		uint16_t port = sock_port(before);
 
 		snprintf(m.bind_dev, sizeof(m.bind_dev), "uvoice-nodev0");
@@ -4402,22 +4402,22 @@ static void test_media_reconfig(void)
 		/* The port is the oracle, not the number: the close and the
 		 * socket() that replaces it run inside one op, so the number
 		 * comes straight back. */
-		CHECK_UINT(sock_port(stream_rec(&p, 0, 0)->rtp_fd), port);
-		CHECK(!memcmp(stream_rec(&p, 0, 0)->sock_bind_dev, m.bind_dev,
+		CHECK_UINT(sock_port(stream_rec(&p, 0, 0)->sock.rtp_fd), port);
+		CHECK(!memcmp(stream_rec(&p, 0, 0)->sock.bind_dev, m.bind_dev,
 			      sizeof(m.bind_dev)));
 
 		CASE("and the same description again keeps the pair it just made");
 		{
-			int kept = stream_rec(&p, 0, 0)->rtp_fd;
+			int kept = stream_rec(&p, 0, 0)->sock.rtp_fd;
 
 			CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) ==
 			      HAL_OK);
-			CHECK_UINT(stream_rec(&p, 0, 0)->rtp_fd, kept);
+			CHECK_UINT(stream_rec(&p, 0, 0)->sock.rtp_fd, kept);
 		}
 
 		memset(m.bind_dev, 0, sizeof(m.bind_dev));
 		CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) == HAL_OK);
-		CHECK_UINT(stream_rec(&p, 0, 0)->sock_bind_dev[0], 0);
+		CHECK_UINT(stream_rec(&p, 0, 0)->sock.bind_dev[0], 0);
 	}
 
 	CHECK(hal_backend_ops.stream_stop(p.h, 0, 0) == HAL_OK);
@@ -4479,8 +4479,8 @@ static void test_media_local_move(void)
 	wire_local_release(&w2);
 	m.local.port = w2.local;
 	CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) == HAL_OK);
-	CHECK_UINT(sock_port(stream_rec(&p, 0, 0)->rtp_fd), w2.local);
-	CHECK_UINT(sock_port(stream_rec(&p, 0, 0)->rtcp_fd), w2.local + 1u);
+	CHECK_UINT(sock_port(stream_rec(&p, 0, 0)->sock.rtp_fd), w2.local);
+	CHECK_UINT(sock_port(stream_rec(&p, 0, 0)->sock.rtcp_fd), w2.local + 1u);
 	CHECK(port_free(w.family, w.local));
 	CHECK(port_free(w.family, (uint16_t)(w.local + 1u)));
 
@@ -4647,7 +4647,7 @@ static void test_media_stats(void)
 	/* The token space of the note in udsp_int.h: the library counts up from
 	 * 1 and this backend runs in the half it can never reach. */
 	CASE("the backend's own token cannot meet a library job token");
-	CHECK(job.token > HAL_UDSP_STATS_TOKEN_BASE);
+	CHECK(job.token > HAL_RELAY_STATS_TOKEN_BASE);
 
 	CASE("it completes as a job done record, with seq 0 like every completion");
 	CHECK(job_wait(&p, job.token, 2000, &status, &seq));
@@ -4683,17 +4683,17 @@ static void test_media_stats(void)
 		struct hal_job wrap = { 0 };
 		struct hal_job after = { 0 };
 
-		p.h->stats_token = HAL_UDSP_STATS_TOKEN_MASK;
+		p.h->relay.stats_token = HAL_RELAY_STATS_TOKEN_MASK;
 		CHECK(hal_backend_ops.stream_stats_start(p.h, 0, 0, &wrap) == HAL_OK);
-		CHECK_UINT(wrap.token, HAL_UDSP_STATS_TOKEN_BASE);
-		CHECK(wrap.token >= HAL_UDSP_STATS_TOKEN_BASE);
+		CHECK_UINT(wrap.token, HAL_RELAY_STATS_TOKEN_BASE);
+		CHECK(wrap.token >= HAL_RELAY_STATS_TOKEN_BASE);
 		/* Never 0, which is what the core reads as "no token". */
 		CHECK(wrap.token != 0);
 		CHECK(job_wait(&p, wrap.token, 2000, NULL, NULL));
 
 		CASE("and the token after the wrap is still inside the half");
 		CHECK(hal_backend_ops.stream_stats_start(p.h, 0, 0, &after) == HAL_OK);
-		CHECK(after.token >= HAL_UDSP_STATS_TOKEN_BASE);
+		CHECK(after.token >= HAL_RELAY_STATS_TOKEN_BASE);
 		CHECK(after.token != wrap.token);
 		CHECK(job_wait(&p, after.token, 2000, NULL, NULL));
 	}
@@ -7911,7 +7911,7 @@ static void test_media_refusals(void)
 		CHECK(hal_backend_ops.stream_config_set(p.h, 0, 0, &m) ==
 		      HAL_UNSUPPORTED);
 		CHECK_UINT(fd_count(), before);
-		CHECK(stream_rec(&p, 0, 0)->rtp_fd == -1);
+		CHECK(stream_rec(&p, 0, 0)->sock.rtp_fd == -1);
 		m.local.ipver = 4;
 	}
 
@@ -8004,7 +8004,7 @@ static void test_media_refusals(void)
 	 * whole of rule 4: no descriptor exists yet and the port is still
 	 * free. */
 	CASE("not one of those refusals made a socket");
-	CHECK(stream_rec(&p, 0, 0)->rtp_fd == -1);
+	CHECK(stream_rec(&p, 0, 0)->sock.rtp_fd == -1);
 	CHECK(port_free(w.family, w.local));
 
 	CASE("a line or a stream outside the capability is refused");
@@ -8062,7 +8062,7 @@ static void test_media_refusals(void)
 	probe_wait(&p, 300);
 	wire_drain(&w, &seen);
 	CHECK(seen.packets > 0);
-	CHECK(fd_live(stream_rec(&p, 0, 0)->rtp_fd));
+	CHECK(fd_live(stream_rec(&p, 0, 0)->sock.rtp_fd));
 
 	/*
 	 * The two ops that now apply. Both were refusals once: the fax profile
@@ -8441,7 +8441,7 @@ static void test_fault_relay(void)
 	fault.u.fault.code = UDSP_FAULT_ENGINE_STALL | UDSP_FAULT_SLIC_VBAT;
 
 	CASE("the library's fault record is accepted by the relay");
-	CHECK(send(p.h->lib_fd, &fault, sizeof(fault), MSG_DONTWAIT | MSG_NOSIGNAL) ==
+	CHECK(send(p.h->relay.lib_fd, &fault, sizeof(fault), MSG_DONTWAIT | MSG_NOSIGNAL) ==
 	      (ssize_t)sizeof(fault));
 
 	CASE("it reaches the core as HAL_EVENT_SLIC_FAULT on the same line");
@@ -8485,7 +8485,7 @@ static void test_fault_relay(void)
 	fault.line = 0;
 	fault.seq = 4243;
 	fault.u.fault.code = UDSP_FAULT_SLIC_THERMAL;
-	CHECK(send(p.h->lib_fd, &fault, sizeof(fault), MSG_DONTWAIT | MSG_NOSIGNAL) ==
+	CHECK(send(p.h->relay.lib_fd, &fault, sizeof(fault), MSG_DONTWAIT | MSG_NOSIGNAL) ==
 	      (ssize_t)sizeof(fault));
 	ev = ev_wait(&p, HAL_EVENT_SLIC_FAULT, 1000);
 	CHECK(ev != NULL);
@@ -8504,7 +8504,7 @@ static void test_fault_relay(void)
 	fault.line = 0;
 	fault.seq = 4244;
 	fault.u.fault.code = 0;
-	CHECK(send(p.h->lib_fd, &fault, sizeof(fault),
+	CHECK(send(p.h->relay.lib_fd, &fault, sizeof(fault),
 		   MSG_DONTWAIT | MSG_NOSIGNAL) == (ssize_t)sizeof(fault));
 	ev = ev_wait(&p, HAL_EVENT_SLIC_FAULT, 1000);
 	CHECK(ev != NULL);

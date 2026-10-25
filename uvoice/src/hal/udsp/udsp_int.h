@@ -66,7 +66,7 @@
  *
  * The watcher itself can fail to register, and a queue with no watcher would
  * wait out the core's 30 s job backstop although the fd has room. The retry
- * timer covers that: it drains from the loop every HAL_UDSP_COMP_RETRY_MS
+ * timer covers that: it drains from the loop every HAL_RELAY_COMP_RETRY_MS
  * until the watcher registers or the queue empties.
  *
  * The queue is 16 deep, which the job model cannot fill: the core carries one
@@ -107,6 +107,8 @@
 
 #include "../../uvoice.h"
 #include "../hal.h"
+#include "../hal_media.h"
+#include "../hal_relay.h"
 
 /*
  * The line count file, which this backend writes at attach. The consumer is
@@ -123,9 +125,6 @@
  * libudsp accepts. The two agree, so region_apply cannot truncate a name.
  */
 #define HAL_UDSP_ISO3_MAX	UDSP_ISO3_MAX
-
-/* The completion queue depth, see the relay note above. */
-#define HAL_UDSP_COMP_MAX	16
 
 /* The backend owns this bit for a dead stream. libudsp never sets it, and
  * udsp_events.c pins every library fault bit below it. Bit 8 stays unassigned
@@ -205,79 +204,36 @@
 #define HAL_UDSP_TS_PER_MS	8
 
 /*
- * The token space of the one job this backend completes itself.
+ * The media socket ownership and the completion token space of this backend
+ * now live in the shared HAL code: struct hal_media_sock and HAL_MEDIA_DSCP_NONE
+ * in hal_media.h, and the completion queue, the drop counters and the reserved
+ * token space (HAL_RELAY_STATS_TOKEN_BASE) in hal_relay.h.
  *
- * hal stream_stats_start is SLOW and libudsp has no slow op behind it: the
- * numbers are a FASTPATH double-buffer snapshot (udsp.h udsp_stream_stats),
- * so the backend reads them and posts the completion under a
- * token of its own. That token travels the same core list as the library's, so
- * the two spaces must not meet. libudsp counts its job tokens up from 1 and
- * only start, stop and region_load consume one, so the high half is
- * unreachable for it; this counter runs there and never leaves it.
- */
-#define HAL_UDSP_STATS_TOKEN_BASE	0x80000000u
-/*
- * The counter runs in the 31 bits below that base and wraps there, so every
- * token this backend emits keeps the reserved bit set however many snapshots a
- * long-lived daemon takes. A counter that simply climbed would leave the half
- * after 2^31 requests and start colliding with the library's own tokens.
- */
-#define HAL_UDSP_STATS_TOKEN_MASK	0x7fffffffu
-/* How long a queue with no write watcher waits before it tries again. Short
- * enough to be invisible against the core's 30 s job backstop, long enough not
- * to poll a healthy loop: the timer only ever runs when uloop_fd_add failed. */
-#define HAL_UDSP_COMP_RETRY_MS	50
-
-/*
- * A DSCP this backend has not successfully put on a socket yet. It is outside
- * the 0..63 a DSCP can hold, so "nothing is on this socket" can never read as
- * a value some description asked for: a mark that failed must leave the record
- * saying so, or the same-value early return of media_tos_apply would decide
- * the socket is already marked and never try again.
- */
-#define HAL_UDSP_DSCP_NONE	0xffu
-
-/*
- * The media sockets of one stream, and why the record is split in two.
+ * One stream of this backend: the shared socket record, the two program flags
+ * and the last stats snapshot.
  *
- * rtp_fd and rtcp_fd are the descriptors this backend made. A stream with no
- * sockets holds -1 in both: the calloc zero would name descriptor 0, which is
- * the daemon's stdin, so udsp_backend_open sets them before any op runs.
+ * configured says what the last successful program asked for; a program that
+ * fails after the library call keeps its sockets, so the socket record and the
+ * program are free to disagree, and every rebind, reconnect or re-mark decision
+ * reads the socket record, never the program. The sockets start at -1 (the
+ * calloc zero would name the daemon's stdin), so udsp_backend_open sets them
+ * before any op runs.
  *
- * sock_local, the two remote records and the two DSCP values say what the
- * sockets carry; configured says what the last successful program asked for. A
- * program that fails after the library call keeps its sockets, so the two must
- * be free to disagree, and every decision about rebinding, reconnecting or
- * re-marking reads the socket record and never the program.
- *
- * stats is the last snapshot stream_stats_start took. It outlives the stream
- * on purpose: the core reads it back with stream_stats_result_get after the
- * stop the snapshot ran in front of (line/line.c media_stats_done).
+ * stats is the last snapshot stream_stats_start took. It outlives the stream on
+ * purpose: the core reads it back with stream_stats_result_get after the stop
+ * the snapshot ran in front of (line/line.c media_stats_done).
  */
 struct hal_udsp_stream {
 	bool configured;
 	bool running;
-	int rtp_fd;
-	int rtcp_fd;
-	struct hal_addr sock_local;	/* what the pair is bound to */
-	struct hal_addr sock_remote;	/* what the rtp socket connects to */
 	/*
-	 * What the rtcp socket connects to. It is the far end's own RTCP
-	 * address when the description named one (RFC 3605 section 2.1) and
-	 * the media address otherwise, so a description that moved that
-	 * address alone still reads as a moved far end.
+	 * The media sockets this backend owns: the bound pair, both peers (the
+	 * rtcp peer is the far end's own a=rtcp address when it named one, the
+	 * media address otherwise), the bound device and the applied DSCP marks.
+	 * The shared helpers in hal_media.c make, mark, connect and close them;
+	 * libudsp dups them.
 	 */
-	struct hal_addr sock_rtcp_remote;
-	/*
-	 * Part of the local identity, not of the program. libudsp never binds
-	 * anything, so SO_BINDTODEVICE reaches the wire only through the
-	 * socket this backend made: a description that changed the device
-	 * alone would otherwise keep sending out of the old one.
-	 */
-	char sock_bind_dev[HAL_IFNAME_MAX];
-	/* HAL_UDSP_DSCP_NONE until a mark actually succeeds. */
-	uint8_t sock_rtp_dscp;
-	uint8_t sock_rtcp_dscp;
+	struct hal_media_sock sock;
 	struct hal_media_stats stats;
 };
 
@@ -309,20 +265,10 @@ struct hal {
 	udsp_t *s;
 	struct hal_cap cap;
 
-	/* The core's write end. hal.h: the backend never closes it. */
-	int core_fd;
-	/* The write end libudsp got, and the read end this backend drains. */
-	int lib_fd;
-	struct uloop_fd relay;
-	/* The same core fd, watched for writability while comp_len is not 0. */
-	struct uloop_fd core_out;
-	/* Armed only while that watcher could not be registered. */
-	struct uloop_timeout comp_retry;
-
-	/* Completions the core fd could not take, oldest at comp_head. */
-	struct hal_event comp[HAL_UDSP_COMP_MAX];
-	unsigned int comp_head;
-	unsigned int comp_len;
+	/* The event relay: the socketpair whose write end libudsp got, the
+	 * completion queue and the drop counters (hal_relay.h). The bring-up
+	 * chain below is its intercept. */
+	struct hal_relay relay;
 
 	/* The bring-up chain. region is the name the initial load carries,
 	 * empty when the config named none. */
@@ -336,19 +282,9 @@ struct hal {
 	bool start_armed;
 	bool region_armed;
 
-	/* Class (a) records the relay could not pass on, added to the library's
-	 * own drop count in counters_get. */
-	uint64_t relay_dropped;
-	/* Class (b) records the completion queue could not hold. The two
-	 * classes are counted apart: this one reaches the core
-	 * as hal_counters.completions_lost and never joins events_dropped. */
-	uint64_t comp_lost;
-
 	/* The media plane. Indexed by the HAL widths, which cap_get clamps the
 	 * library's own numbers to, so no op can reach past either array. */
 	struct hal_udsp_stream stream[HAL_LINE_MAX][HAL_STREAM_MAX];
-	/* Runs inside HAL_UDSP_STATS_TOKEN_BASE, see the note there. */
-	uint32_t stats_token;
 
 	/* The enum hal_debug_flag mask in force, and the timer that drains the
 	 * library ring while its jitter buffer bit is set. The mask follows
@@ -449,14 +385,6 @@ void hal_udsp_lec_stats_fill(struct hal_lec_stats *dst,
 const char *hal_udsp_jb_state_name(uint8_t state);
 const char *hal_udsp_jb_decision_name(uint8_t decision);
 const char *hal_udsp_jb_rc_name(int8_t rc);
-/*
- * The wire mark: IP_TOS for AF_INET, IPV6_TCLASS for AF_INET6,
- * both computed as (dscp << 2) from the 0..63 DSCP hal_media carries. Returns
- * 0 when the mark reached the socket. Non-static so a case can assert the
- * AF_INET6 arm on a socket of its own; the IPv6 stream cases reach that arm
- * through the media path as well.
- */
-int hal_udsp_dscp_mark(int fd, int family, uint8_t dscp);
 
 /*
  * One packet trace record onto the call trace ring. It is non-static so a case

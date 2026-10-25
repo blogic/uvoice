@@ -20,8 +20,7 @@
  * creates a socket (udsp.h section 3), so the media ops carry the socket
  * ownership of hal.h stream_config_set as well as the translation: this
  * backend makes, binds, marks, connects and closes the two descriptors of
- * every stream, and libudsp dups them. See the socket note above
- * media_fds_close().
+ * every stream through the shared hal_media.c, and libudsp dups them.
  *
  * The engine stall is consumed both ways: through the return codes, and
  * through the main.c HAL_EVENT_SLIC_FAULT arm. See the fault note in
@@ -359,10 +358,10 @@ static void udsp_counters_get(struct hal *h, struct hal_counters *out)
 	/* Both hops count: the library's emitter drops on a full relay fd and
 	 * the relay drops on a full core fd, and either one is a lost class (a)
 	 * record the core has to see in one number. */
-	out->events_dropped = c.events_dropped + h->relay_dropped;
+	out->events_dropped = c.events_dropped + h->relay.dropped;
 	out->op_errors = c.op_errors;
 	out->tdm_stalls = c.tdm_stalls;
-	out->completions_lost = h->comp_lost;
+	out->completions_lost = h->relay.comp_lost;
 	out->holds = c.holds;
 	out->capture_drops = c.capture_drops;
 	out->trim_drops = c.trim_drops;
@@ -510,134 +509,13 @@ void hal_udsp_fxsnum_write(unsigned int lines)
 	fclose(f);
 }
 
-/* --- the event relay ------------------------------------------------------ */
-
-static bool event_send(struct hal *h, const struct hal_event *ev)
-{
-	ssize_t len = send(h->core_fd, ev, sizeof(*ev), MSG_DONTWAIT | MSG_NOSIGNAL);
-
-	return len == (ssize_t)sizeof(*ev);
-}
-
-/*
- * The write watcher exists only while a completion is waiting for room. An
- * armed watcher on an empty queue would wake the loop on every turn, because
- * an fd with room is writable for ever.
+/* --- the event relay ------------------------------------------------------
  *
- * A registration that fails must not strand the queue. Nothing else would wake
- * those records, and the core would wait out its 30 s job backstop with room on
- * the fd, so the retry timer takes the watcher's place until one registration
- * succeeds or the queue empties.
+ * The transport, the completion queue and the drop counters live in the shared
+ * hal_relay.c. This backend keeps only the two bring-up translations below:
+ * the stream-dead fault it posts as a completion, and the chain that turns the
+ * engine's start and region loads into the one completion the core waits for.
  */
-static void completion_watch_set(struct hal *h, bool on)
-{
-	if (!on) {
-		uloop_timeout_cancel(&h->comp_retry);
-		if (h->core_out.registered)
-			uloop_fd_delete(&h->core_out);
-		return;
-	}
-
-	if (h->core_out.registered)
-		return;
-
-	if (uloop_fd_add(&h->core_out, ULOOP_WRITE) == 0) {
-		uloop_timeout_cancel(&h->comp_retry);
-		return;
-	}
-
-	ULOG_ERR("udsp: completion watcher: %s, retrying in %u ms\n",
-		 strerror(errno), HAL_UDSP_COMP_RETRY_MS);
-	uloop_timeout_set(&h->comp_retry, HAL_UDSP_COMP_RETRY_MS);
-}
-
-/* Oldest first, so the core reads the completions in the order the jobs
- * finished. A record that still does not fit leaves the rest queued and asks
- * for the watcher again: this drain also runs from the forward path and from
- * the retry timer, and neither of those holds a registration of its own. */
-static void completion_drain(struct hal *h)
-{
-	while (h->comp_len) {
-		if (!event_send(h, &h->comp[h->comp_head])) {
-			completion_watch_set(h, true);
-			return;
-		}
-
-		h->comp_head = (h->comp_head + 1) % HAL_UDSP_COMP_MAX;
-		h->comp_len--;
-	}
-
-	completion_watch_set(h, false);
-}
-
-static void completion_retry(struct uloop_timeout *t)
-{
-	struct hal *h = container_of(t, struct hal, comp_retry);
-
-	completion_drain(h);
-}
-
-static void completion_ready(struct uloop_fd *ufd, unsigned int events)
-{
-	struct hal *h = container_of(ufd, struct hal, core_out);
-
-	completion_drain(h);
-}
-
-/*
- * A class (b) record is never dropped and never waits (hal.h section 2). The
- * send is tried at once while the queue is empty, because that is the whole
- * cost on a core that keeps up; a full fd queues the record and arms the write
- * watcher instead. A queue that is not empty takes every later record without
- * a try of its own, or a completion would overtake the one before it.
- */
-static void completion_send(struct hal *h, const struct hal_event *ev)
-{
-	unsigned int tail;
-
-	if (!h->comp_len && event_send(h, ev))
-		return;
-
-	/* The overflow is unreachable from the two producers, the job
-	 * completion and the synthetic stream fault. Both run on the uloop
-	 * thread, the core carries at most eight pending jobs, and one stream
-	 * op posts at most one fault, so sixteen records never wait at once. A
-	 * drop increments comp_lost and reaches the core through
-	 * hal_counters.completions_lost. events_dropped stays the class (a)
-	 * number that hal.h section 2 describes. */
-	if (h->comp_len >= HAL_UDSP_COMP_MAX) {
-		h->comp_lost++;
-		if (ev->type == HAL_EVENT_JOB_DONE)
-			ULOG_ERR("udsp: queued record type %u token %u "
-				 "dropped, the queue is full\n", ev->type,
-				 ev->u.job.token);
-		else
-			ULOG_ERR("udsp: queued record type %u dropped, the "
-				 "queue is full\n", ev->type);
-		return;
-	}
-
-	tail = (h->comp_head + h->comp_len) % HAL_UDSP_COMP_MAX;
-	h->comp[tail] = *ev;
-	h->comp_len++;
-	completion_watch_set(h, true);
-}
-
-/*
- * The completion the backend posts itself, for the token the core is waiting
- * on. It carries seq 0, so it stays outside the core's gap accounting, and the
- * stamp it takes here travels with it however long the queue holds it.
- */
-static void completion_post(struct hal *h, uint32_t token, enum hal_status st)
-{
-	struct hal_event ev = { .type = HAL_EVENT_JOB_DONE };
-
-	ev.u.job.token = token;
-	ev.u.job.status = (int32_t)st;
-	ev.stamp_ms = uvoice_mono_ms();
-
-	completion_send(h, &ev);
-}
 
 static void stream_dead_report(struct hal *h, unsigned int line,
 			       unsigned int stream, const char *op)
@@ -663,34 +541,7 @@ static void stream_dead_report(struct hal *h, unsigned int line,
 	ULOG_ERR("udsp: line %u stream %u: the library marked the stream "
 		 "dead on %s\n", line, stream, op);
 	ev.u.fault.code = HAL_FAULT_STREAM_DEAD;
-	completion_send(h, &ev);
-}
-
-/*
- * A hardware event is dropped on a full FD and counted (hal.h section 2 (a)),
- * which is the same policy libudsp's own emitter applies one hop earlier. The
- * gap the core then sees in seq is the fault indicator; nothing is queued and
- * nothing is retried.
- *
- * A queued completion goes first. Room that appears on the core fd belongs to
- * the record already waiting for it: a hardware event that took it would push
- * a job out to the core's 30 s backstop, so the queue is drained here before
- * anything else is written, and this record is dropped while the queue is
- * still not empty. libudsp's own emitter orders its producers the same way
- * (core event.c ev_drain: "Completions first: a hardware burst must not delay
- * one").
- */
-static void event_forward(struct hal *h, const struct hal_event *ev)
-{
-	if (h->comp_len)
-		completion_drain(h);
-
-	if (!h->comp_len && event_send(h, ev))
-		return;
-
-	h->relay_dropped++;
-	TRACE(TRACE_HAL, "udsp: event type %u line %u dropped: %s", ev->type,
-	      ev->line, strerror(errno));
+	hal_relay_completion_send(&h->relay, &ev);
 }
 
 /*
@@ -705,7 +556,7 @@ static void region_embrace(struct hal *h)
 	if (!h->region[0]) {
 		ULOG_WARN("udsp: no region configured, tones wait for the first "
 			  "region_apply\n");
-		completion_post(h, h->start_token, HAL_OK);
+		hal_relay_completion_post(&h->relay, h->start_token, HAL_OK);
 		return;
 	}
 
@@ -715,7 +566,7 @@ static void region_embrace(struct hal *h)
 		 * silent phone, a failed bring-up is no phone at all. */
 		ULOG_WARN("udsp: initial region %s refused: %s, tones wait for "
 			  "region_apply\n", h->region, udsp_status_name(rc));
-		completion_post(h, h->start_token, HAL_OK);
+		hal_relay_completion_post(&h->relay, h->start_token, HAL_OK);
 		return;
 	}
 
@@ -728,8 +579,9 @@ static void region_embrace(struct hal *h)
  * core: the core knows one token for the whole bring-up and gets exactly one
  * completion for it.
  */
-static bool chain_take(struct hal *h, const struct hal_event *ev)
+static bool chain_take(void *ctx, const struct hal_event *ev)
 {
+	struct hal *h = ctx;
 	enum hal_status st;
 
 	if (ev->type != HAL_EVENT_JOB_DONE)
@@ -740,7 +592,7 @@ static bool chain_take(struct hal *h, const struct hal_event *ev)
 	if (h->start_armed && ev->u.job.token == h->start_token) {
 		h->start_armed = false;
 		if (st != HAL_OK) {
-			completion_post(h, h->start_token, st);
+			hal_relay_completion_post(&h->relay, h->start_token, st);
 			return true;
 		}
 
@@ -755,93 +607,11 @@ static bool chain_take(struct hal *h, const struct hal_event *ev)
 				  "wait for region_apply\n", h->region,
 				  hal_status_name(st));
 
-		completion_post(h, h->start_token, HAL_OK);
+		hal_relay_completion_post(&h->relay, h->start_token, HAL_OK);
 		return true;
 	}
 
 	return false;
-}
-
-static void relay_read(struct uloop_fd *ufd, unsigned int events)
-{
-	struct hal *h = container_of(ufd, struct hal, relay);
-	struct hal_event ev;
-	ssize_t len;
-
-	while (true) {
-		len = recv(ufd->fd, &ev, sizeof(ev), MSG_DONTWAIT);
-		if (len < 0 && errno == EINTR)
-			continue;
-		if (len < 0)
-			return;
-		if (len != (ssize_t)sizeof(ev)) {
-			/* SOCK_SEQPACKET keeps message boundaries, so this is
-			 * a record neither contract describes. */
-			ULOG_ERR("udsp: short library event: %zd bytes\n", len);
-			continue;
-		}
-
-		if (chain_take(h, &ev))
-			continue;
-
-		/* The library's own completions are class (b) as well: the
-		 * region_apply and the stop the core submitted complete
-		 * through here, and a lost one strands the job. */
-		if (ev.type == HAL_EVENT_JOB_DONE)
-			completion_send(h, &ev);
-		else
-			event_forward(h, &ev);
-	}
-}
-
-/*
- * The backend's own transport. libudsp gets lib_fd and the relay drains the
- * other end on the uloop thread; the core's fd is only ever written.
- *
- * CLOEXEC for the reason main.c gives its own pair: the firewall helper and
- * the event publisher fork children that must not inherit a voice fd.
- */
-static int relay_open(struct hal *h)
-{
-	int fd[2];
-
-	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0,
-		       fd))
-		return -1;
-
-	h->relay.fd = fd[0];
-	h->relay.cb = relay_read;
-	h->lib_fd = fd[1];
-
-	if (uloop_fd_add(&h->relay, ULOOP_READ) < 0) {
-		close(fd[0]);
-		close(fd[1]);
-		h->relay.fd = -1;
-		h->lib_fd = -1;
-		return -1;
-	}
-
-	return 0;
-}
-
-static void relay_close(struct hal *h)
-{
-	/* The core fd itself belongs to the core, which closes it after this
-	 * backend is gone; only the write watcher and its retry timer are this
-	 * backend's to drop, and this call drops both. */
-	completion_watch_set(h, false);
-	uloop_timeout_cancel(&h->comp_retry);
-
-	if (h->relay.registered)
-		uloop_fd_delete(&h->relay);
-
-	if (h->relay.fd >= 0)
-		close(h->relay.fd);
-	if (h->lib_fd >= 0)
-		close(h->lib_fd);
-
-	h->relay.fd = -1;
-	h->lib_fd = -1;
 }
 
 /* --- lifecycle ----------------------------------------------------------- */
@@ -1129,9 +899,9 @@ static void pkt_gen_add(struct hal *h, unsigned int line, unsigned int stream,
 
 	e = &t->entry[t->next];
 	e->gen = udsp_stream_gen(h->s, line, stream);
-	e->local = s->sock_local;
-	e->remote = s->sock_remote;
-	e->rtcp_remote = s->sock_rtcp_remote;
+	e->local = s->sock.local;
+	e->remote = s->sock.remote;
+	e->rtcp_remote = s->sock.rtcp_remote;
 	t->next = (uint8_t)((t->next + 1u) % HAL_UDSP_PKT_GEN_MAX);
 	if (t->count < HAL_UDSP_PKT_GEN_MAX)
 		t->count++;
@@ -1609,15 +1379,9 @@ static struct hal *udsp_backend_open(int event_fd)
 		return NULL;
 	}
 
-	h->core_fd = event_fd;
-	h->core_out.fd = event_fd;
-	h->core_out.cb = completion_ready;
-	h->comp_retry.cb = completion_retry;
 	h->jb_trace.cb = jb_trace_expire;
 	h->pkt_trace.cb = pkt_trace_expire;
 	h->lec_capture.cb = lec_capture_expire;
-	h->lib_fd = -1;
-	h->relay.fd = -1;
 	/* Descriptor 0 is the daemon's stdin and calloc leaves every int at 0,
 	 * so the media descriptors are marked absent before any op can read
 	 * one. An assignment, never a close. */
@@ -1631,7 +1395,7 @@ static struct hal *udsp_backend_open(int event_fd)
 	hal_udsp_region_prefetch(h, cfg->region, h->region, sizeof(h->region));
 	cfg_free(cfg);
 
-	if (relay_open(h)) {
+	if (hal_relay_open(&h->relay, event_fd, "udsp", chain_take, h)) {
 		ULOG_ERR("udsp: event relay: %s\n", strerror(errno));
 		free(h);
 		return NULL;
@@ -1647,12 +1411,12 @@ static struct hal *udsp_backend_open(int event_fd)
 	 * uvoiced cannot have left a stream behind either, because libudsp
 	 * holds the audio devices for the life of the process.
 	 */
-	h->s = udsp_open(&scfg, h->lib_fd);
+	h->s = udsp_open(&scfg, h->relay.lib_fd);
 	if (!h->s) {
 		ULOG_ERR("udsp: udsp_open failed (tdm %s, slic %s), no voice "
 			 "hardware\n", scfg.tdm_backend,
 			 scfg.slic_plugin[0] ? scfg.slic_plugin : "(fake)");
-		relay_close(h);
+		hal_relay_close(&h->relay);
 		free(h);
 		return NULL;
 	}
@@ -1712,7 +1476,7 @@ static void udsp_backend_close(struct hal *h)
 	 * also drops any dup a dead-marked stream still held and zeroizes the
 	 * key material with it. */
 	udsp_close(h->s);
-	relay_close(h);
+	hal_relay_close(&h->relay);
 	free(h);
 }
 
@@ -2312,229 +2076,11 @@ void hal_udsp_region_fill(struct hal_region *dst,
 }
 
 /*
- * The media sockets
- *
- * libudsp never creates one (udsp.h section 3). Four operations,
- * each with the moment it belongs to: open creates, binds and marks the pair,
- * connect runs before the library call so the descriptors libudsp dups are
- * already pointed at the far end, close runs after udsp_stream_stop and never
- * before it, and the mark is refreshed on a re-program that kept its pair.
- *
- * The owner keeps them open for the whole life of the stream (hal.h
- * stream_start: "the daemon holds those sockets open for the whole life of the
- * stream and never reads them"). It has to: a re-INVITE re-programs the stream
- * with no preceding stop, and that pass passes the same descriptors again.
- *
- * Why the close is safe where it is. udsp_stream_stop removes the sockets from
- * the net epoll set and drops libudsp's dups before it returns, so the
- * originals close behind it with no fd reuse race (udsp.h section 3). The
- * library never compares fd numbers to decide identity, because a closed
- * number comes back, so nothing here depends on a number staying unique.
+ * The media sockets live in the shared hal_media.c: struct hal_media_sock and
+ * hal_media_sock_open / _connect / _tos_refresh / _close. libudsp never creates
+ * one (udsp.h section 3), so this backend owns the pair and hands the numbers
+ * to the library. The order inside a program is in udsp_stream_config_set.
  */
-static void media_fds_close(struct hal_udsp_stream *s)
-{
-	if (s->rtp_fd >= 0)
-		close(s->rtp_fd);
-	if (s->rtcp_fd >= 0)
-		close(s->rtcp_fd);
-
-	s->rtp_fd = -1;
-	s->rtcp_fd = -1;
-	memset(&s->sock_local, 0, sizeof(s->sock_local));
-	memset(&s->sock_remote, 0, sizeof(s->sock_remote));
-	memset(&s->sock_rtcp_remote, 0, sizeof(s->sock_rtcp_remote));
-	memset(s->sock_bind_dev, 0, sizeof(s->sock_bind_dev));
-	s->sock_rtp_dscp = HAL_UDSP_DSCP_NONE;
-	s->sock_rtcp_dscp = HAL_UDSP_DSCP_NONE;
-}
-
-static int addr_family(const struct hal_addr *a)
-{
-	return a->ipver == 6 ? AF_INET6 : AF_INET;
-}
-
-/*
- * The wire mark, and the one place it is computed. hal_media
- * carries a DSCP of 0 to 63 and the socket option takes the whole byte, so the
- * TOS byte is (dscp << 2) and the two low bits stay 0. IP_TOS marks an AF_INET
- * socket and IPV6_TCLASS marks an AF_INET6 one, and libudsp sends on the
- * descriptor this backend marked.
- */
-int hal_udsp_dscp_mark(int fd, int family, uint8_t dscp)
-{
-	int tos = ((int)dscp << 2) & 0xfc;
-
-	if (sock_tos_set(fd, family, tos) == 0)
-		return 0;
-
-	TRACE(TRACE_HAL, "udsp: media mark 0x%02x: %s", (unsigned)tos,
-	      strerror(errno));
-
-	return -1;
-}
-
-/*
- * A bind failure closes what it made, names the port and gives up: the caller
- * owns the failure. A call that cannot source its advertised port is a failed
- * call, and a retry loop here would hide a port pool defect.
- *
- * The mark is not applied here. media_tos_refresh() owns every mark, on a
- * fresh pair and on a re-programmed one alike, so there is exactly one place
- * that decides whether a DSCP reached the socket and exactly one place that
- * records it.
- *
- * CLOEXEC, because the firewall helper and the event publisher fork children
- * that must not inherit a voice socket, which is the reason main.c and the
- * event relay give for their own pairs; libudsp dups
- * these with F_DUPFD_CLOEXEC, so its copies already carry it.
- */
-static int media_fd_bind(struct hal *h, const struct hal_addr *local, uint16_t port,
-			 const char *bind_dev)
-{
-	size_t dev_len = strnlen(bind_dev, HAL_IFNAME_MAX);
-	int family = addr_family(local);
-	union sockaddr_any sa;
-	socklen_t len;
-	int on = 1;
-	int fd;
-
-	fd = socket(family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-	if (fd < 0) {
-		TRACE(TRACE_HAL, "udsp: media socket: %s", strerror(errno));
-		return -1;
-	}
-
-	/*
-	 * An AF_INET6 media socket takes no IPv4 mapped source. hal_addr names
-	 * one family per description and rule 4 refuses a mixed one, so a
-	 * mapped peer would be an address the description never named.
-	 *
-	 * The failure is hard, unlike the SO_BINDTODEVICE below: a socket that
-	 * silently accepts such a peer breaks the family the description
-	 * promised. transport.c sock_fd_open() applies the same rule.
-	 */
-	if (family == AF_INET6 &&
-	    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on)) != 0) {
-		TRACE(TRACE_HAL, "udsp: media v6only: %s", strerror(errno));
-		close(fd);
-
-		return -1;
-	}
-
-	if (dev_len && setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, bind_dev,
-				  (socklen_t)dev_len) != 0)
-		TRACE(TRACE_HAL, "udsp: media bind to device %.*s: %s", (int)dev_len,
-		      bind_dev, strerror(errno));
-
-	len = sockaddr_fill(&sa, local, port);
-	if (bind(fd, &sa.sa, len) == 0)
-		return fd;
-
-	TRACE(TRACE_HAL, "udsp: media bind port %u: %s", port, strerror(errno));
-	close(fd);
-
-	return -1;
-}
-
-static void media_tos_refresh(struct hal_udsp_stream *s, const struct hal_media *m);
-
-static enum hal_status media_fds_open(struct hal *h, struct hal_udsp_stream *s,
-				      const struct hal_media *m)
-{
-	s->rtp_fd = media_fd_bind(h, &m->local, m->local.port, m->bind_dev);
-	s->rtcp_fd = media_fd_bind(h, &m->local, rtcp_port_of(&m->local),
-				   m->bind_dev);
-	if (s->rtp_fd < 0 || s->rtcp_fd < 0) {
-		media_fds_close(s);
-		return HAL_FATAL;
-	}
-
-	s->sock_local = m->local;
-	memcpy(s->sock_bind_dev, m->bind_dev, sizeof(s->sock_bind_dev));
-	/* Nothing is marked yet, so the refresh below marks both and records
-	 * only what actually reached the socket. */
-	s->sock_rtp_dscp = HAL_UDSP_DSCP_NONE;
-	s->sock_rtcp_dscp = HAL_UDSP_DSCP_NONE;
-	media_tos_refresh(s, m);
-
-	return HAL_OK;
-}
-
-/*
- * A re-program that keeps its pair can still carry a new DSCP, and the mark
- * lives on the socket, so it is re-applied on the descriptors libudsp already
- * dup'd. A dup shares its file description with the original, so the mark
- * reaches the library's copy as well; setsockopt on a bound and connected UDP
- * socket changes the next datagram and nothing else.
- */
-static void media_tos_refresh(struct hal_udsp_stream *s, const struct hal_media *m)
-{
-	int family = addr_family(&s->sock_local);
-
-	media_tos_apply(s->rtp_fd, family, m->rtp_dscp, &s->sock_rtp_dscp,
-			hal_udsp_dscp_mark);
-	media_tos_apply(s->rtcp_fd, family, m->rtcp_dscp, &s->sock_rtcp_dscp,
-			hal_udsp_dscp_mark);
-}
-
-/*
- * The RTCP peer of one description: the far end's own RTCP address when its
- * a=rtcp named one (hal_media.rtcp_remote, RFC 3605 section 2.1), and the media
- * address otherwise. The port is remote.rtcp_port either way, which
- * rtcp_port_of() derives when the peer named none.
- */
-static void rtcp_peer_of(const struct hal_media *m, struct hal_addr *out)
-{
-	*out = m->remote;
-
-	if (!m->rtcp_remote.ipver)
-		return;
-
-	out->ipver = m->rtcp_remote.ipver;
-	memcpy(out->addr, m->rtcp_remote.addr, sizeof(out->addr));
-}
-
-/*
- * The connect is what makes the stream work in both directions. libudsp sends
- * with no destination address (core stream_send passes none), so an
- * unconnected descriptor would fail every send with EDESTADDRREQ, and the
- * receive path takes whatever arrives, so the connect is also what filters the
- * far end.
- *
- * It runs before the library call, not after it: udsp_stream_config documents
- * its two arguments as "the backend-owned, bound, connected descriptors".
- *
- * The two descriptors can take two different peers. RTCP goes where
- * rtcp_peer_of() says, which is the media address for every description that
- * named no a=rtcp address, and the record keeps both peers: a description that
- * moved the RTCP address alone still has to reconnect.
- */
-static enum hal_status media_fds_connect(struct hal *h, struct hal_udsp_stream *s,
-					 const struct hal_media *m)
-{
-	struct hal_addr rtcp;
-
-	rtcp_peer_of(m, &rtcp);
-
-	if (media_fd_connect(s->rtp_fd, &m->remote, m->remote.port) != 0 ||
-	    media_fd_connect(s->rtcp_fd, &rtcp, rtcp_port_of(&rtcp)) != 0) {
-		TRACE(TRACE_HAL, "udsp: media connect port %u: %s", m->remote.port,
-		      strerror(errno));
-		return HAL_FATAL;
-	}
-
-	s->sock_remote = m->remote;
-	s->sock_rtcp_remote = rtcp;
-
-	return HAL_OK;
-}
-
-/* The two versions a hal_addr record defines (hal.h struct hal_addr). Any
- * other value names no family, so no socket can hold it. */
-static bool ipver_known(uint8_t v)
-{
-	return v == 4 || v == 6;
-}
 
 /*
  * What this backend can program at all, tested before anything is touched
@@ -2589,72 +2135,11 @@ static enum hal_status media_validate(struct hal *h, const struct hal_media *m)
 	}
 
 	/*
-	 * hal.h stream_config_set rule 4. libudsp is family agnostic and this
-	 * backend binds, marks and connects in either family, so it sets
-	 * HAL_FEAT_IPV6_MEDIA and carries IPv6.
-	 *
-	 * What stays refused is a shape no socket can hold: a version the
-	 * record does not define, and a description whose two ends, or whose
-	 * separate RTCP address, sit in different families. One socket has one
-	 * family.
+	 * The address shape (families, ports, the RTCP port wrap) is the shared
+	 * check, which reads the backend's feature bits: this backend sets
+	 * HAL_FEAT_IPV6_MEDIA, so it carries IPv6.
 	 */
-	if (!ipver_known(m->local.ipver) || !ipver_known(m->remote.ipver) ||
-	    m->local.ipver != m->remote.ipver ||
-	    (m->rtcp_remote.ipver && m->rtcp_remote.ipver != m->remote.ipver)) {
-		TRACE(TRACE_HAL, "udsp: media local ipver %u remote ipver %u "
-		      "rtcp ipver %u: one stream carries one family",
-		      m->local.ipver, m->remote.ipver, m->rtcp_remote.ipver);
-		return HAL_UNSUPPORTED;
-	}
-
-	/*
-	 * Rule 4 states this refusal, and this backend sets the bit above, so
-	 * the test is dead here. It is kept because a build that ever clears
-	 * the bit must not program an IPv6 stream without saying so.
-	 */
-	if (m->local.ipver == 6 && !(h->cap.features & HAL_FEAT_IPV6_MEDIA)) {
-		TRACE(TRACE_HAL, "udsp: media ipver 6 on a backend that does "
-		      "not carry HAL_FEAT_IPV6_MEDIA");
-		return HAL_UNSUPPORTED;
-	}
-
-	/* Port 0 would take an ephemeral pair, which is the very thing this
-	 * form exists to stop: the SDP names a port the far end sends to. */
-	if (!m->local.port) {
-		TRACE(TRACE_HAL, "udsp: media program carries no local port");
-		return HAL_FATAL;
-	}
-
-	/*
-	 * The connected-socket guarantee, made structural. A zero remote port
-	 * is the one hal_media shape that would skip the connect, and an
-	 * unconnected media socket takes any source and can send to none, so
-	 * the shape is refused here and never reaches a socket.
-	 */
-	if (!m->remote.port) {
-		TRACE(TRACE_HAL, "udsp: media program carries no remote port");
-		return HAL_FATAL;
-	}
-
-	/*
-	 * The derived RTCP port wraps at 65535 and the wrap is silent. An
-	 * endpoint that names port 65535 and no rtcp port of its own derives
-	 * 65536, which the uint16 of rtcp_port_of() truncates to 0: the local
-	 * side would then bind an ephemeral rtcp socket instead of the one the
-	 * SDP advertised, and the remote side would connect to port 0. That
-	 * connect does not fail: a UDP socket on Linux keeps its address
-	 * filter and loses only the port filter. Both are silent, so the
-	 * shape is refused here, before any socket changes, and as HAL_FATAL
-	 * for the same reason a missing port is one: the core should never
-	 * have built this description.
-	 */
-	if (!rtcp_port_of(&m->local) || !rtcp_port_of(&m->remote)) {
-		TRACE(TRACE_HAL, "udsp: media rtcp port derives from %u and "
-		      "wraps to zero", m->local.port);
-		return HAL_FATAL;
-	}
-
-	return HAL_OK;
+	return hal_media_validate_addrs(m, h->cap.features);
 }
 
 /*
@@ -2678,7 +2163,7 @@ static enum hal_status stream_halt(struct hal *h, unsigned int line,
 	if (st == HAL_FATAL)
 		stream_dead_report(h, line, stream, "stream_stop");
 
-	media_fds_close(s);
+	hal_media_sock_close(&s->sock);
 	s->running = false;
 	/* The pushed configuration named descriptors that no longer exist, so
 	 * the stream must be programmed again before it can start. */
@@ -2713,19 +2198,19 @@ static enum hal_status stream_sockets_take(struct hal *h, unsigned int line,
 	enum hal_status st;
 
 	*fresh = false;
-	if (s->rtp_fd >= 0 && addr_same(&s->sock_local, &m->local) &&
-	    !memcmp(s->sock_bind_dev, m->bind_dev, sizeof(s->sock_bind_dev)))
+	if (s->sock.rtp_fd >= 0 && addr_same(&s->sock.local, &m->local) &&
+	    !memcmp(s->sock.bind_dev, m->bind_dev, sizeof(s->sock.bind_dev)))
 		return HAL_OK;
 
-	if (s->rtp_fd >= 0) {
+	if (s->sock.rtp_fd >= 0) {
 		TRACE(TRACE_HAL, "udsp: media local port %u moved to %u, new "
-		      "sockets", s->sock_local.port, m->local.port);
+		      "sockets", s->sock.local.port, m->local.port);
 		st = stream_halt(h, line, stream, s);
 		if (st != HAL_OK && st != HAL_UNSUPPORTED)
 			return st;
 	}
 
-	st = media_fds_open(h, s, m);
+	st = hal_media_sock_open(&s->sock, m);
 	if (st != HAL_OK)
 		return st;
 
@@ -2785,27 +2270,27 @@ static enum hal_status udsp_stream_config_set(struct hal *h, unsigned int line,
 	/* Both peers decide the reconnect. A description that kept its media
 	 * address and named another RTCP address moved the far end of one
 	 * descriptor, and RTCP would keep going to the old one otherwise. */
-	rtcp_peer_of(media, &rtcp);
-	if (fresh || !addr_same(&s->sock_remote, &media->remote) ||
-	    !addr_same(&s->sock_rtcp_remote, &rtcp)) {
-		st = media_fds_connect(h, s, media);
+	hal_media_rtcp_peer(media, &rtcp);
+	if (fresh || !addr_same(&s->sock.remote, &media->remote) ||
+	    !addr_same(&s->sock.rtcp_remote, &rtcp)) {
+		st = hal_media_sock_connect(&s->sock, media);
 		if (st != HAL_OK) {
 			/* Nothing reached the library in this pass, so a pair
 			 * this pass created can close here; one an earlier pass
 			 * handed over stays, because libudsp holds its dups. */
 			if (fresh)
-				media_fds_close(s);
+				hal_media_sock_close(&s->sock);
 
 			return st;
 		}
 	}
 
 	if (!fresh)
-		media_tos_refresh(s, media);
+		hal_media_sock_tos_refresh(&s->sock, media);
 
 	hal_udsp_media_fill(&m, media);
-	st = call_check(udsp_stream_config(h->s, line, stream, &m, s->rtp_fd,
-					   s->rtcp_fd), "stream_config");
+	st = call_check(udsp_stream_config(h->s, line, stream, &m, s->sock.rtp_fd,
+					   s->sock.rtcp_fd), "stream_config");
 	/* The stack copy is dead from here whatever the library answered,
 	 * and it holds both keys. */
 	explicit_bzero(&m, sizeof(m));
@@ -2813,7 +2298,7 @@ static enum hal_status udsp_stream_config_set(struct hal *h, unsigned int line,
 		if (st == HAL_FATAL)
 			stream_dead_report(h, line, stream, "stream_config");
 		if (fresh)
-			media_fds_close(s);
+			hal_media_sock_close(&s->sock);
 
 		return st;
 	}
@@ -3025,10 +2510,8 @@ static void media_fds_init(struct hal *h)
 	unsigned int line, stream;
 
 	for (line = 0; line < HAL_LINE_MAX; line++)
-		for (stream = 0; stream < HAL_STREAM_MAX; stream++) {
-			h->stream[line][stream].rtp_fd = -1;
-			h->stream[line][stream].rtcp_fd = -1;
-		}
+		for (stream = 0; stream < HAL_STREAM_MAX; stream++)
+			hal_media_sock_init(&h->stream[line][stream].sock);
 }
 
 static void media_stream_release(struct hal *h, unsigned int line,
@@ -3036,7 +2519,7 @@ static void media_stream_release(struct hal *h, unsigned int line,
 {
 	struct hal_udsp_stream *s = &h->stream[line][stream];
 
-	if (s->rtp_fd < 0 && !s->configured)
+	if (s->sock.rtp_fd < 0 && !s->configured)
 		return;
 
 	stream_halt(h, line, stream, s);
@@ -3303,7 +2786,7 @@ static enum hal_status udsp_line_test_start(struct hal *h, unsigned int line,
  * the contract is unchanged: the op still returns as soon as the work is
  * accepted, still fills job->token before it returns, and the result still
  * arrives as a HAL_EVENT_JOB_DONE record the core dispatches on the uloop
- * thread. It cannot arrive early: completion_send only writes the socket, and
+ * thread. It cannot arrive early: the relay only writes the socket, and
  * the core's reader is a uloop callback, so the core has returned from this op
  * and called job_add() long before the loop turns again (line/line.c
  * media_stats_snapshot: the op is called, then the job is added).
@@ -3312,25 +2795,6 @@ static enum hal_status udsp_line_test_start(struct hal *h, unsigned int line,
  * reads it back with stream_stats_result_get after the stop the snapshot ran
  * in front of, which is why the query may run before the teardown at all.
  */
-/* The base is the reserved bit and the mask is everything below it, so the or
- * below cannot carry out of the half however far the counter has run. */
-_Static_assert((HAL_UDSP_STATS_TOKEN_BASE & HAL_UDSP_STATS_TOKEN_MASK) == 0,
-	       "the stats token base overlaps its own counter");
-_Static_assert((HAL_UDSP_STATS_TOKEN_BASE | HAL_UDSP_STATS_TOKEN_MASK) == 0xffffffffu,
-	       "the stats token base and mask do not cover the word");
-
-static uint32_t stats_token_next(struct hal *h)
-{
-	/* The counter wraps inside the half rather than climbing out of it: a
-	 * plain increment would leave the reserved range after 2^31 snapshots
-	 * and start colliding with the library's own job tokens, which count up
-	 * from 1. The or keeps the reserved bit set by construction, and the
-	 * result is never 0, which is what the core reads as "no token". */
-	h->stats_token = (h->stats_token + 1u) & HAL_UDSP_STATS_TOKEN_MASK;
-
-	return HAL_UDSP_STATS_TOKEN_BASE | h->stats_token;
-}
-
 static enum hal_status udsp_stream_stats_start(struct hal *h, unsigned int line,
 					       unsigned int stream,
 					       struct hal_job *job)
@@ -3349,8 +2813,8 @@ static enum hal_status udsp_stream_stats_start(struct hal *h, unsigned int line,
 		return st;
 
 	hal_udsp_stats_fill(&s->stats, &snap);
-	job->token = stats_token_next(h);
-	completion_post(h, job->token, HAL_OK);
+	job->token = hal_relay_stats_token_next(&h->relay);
+	hal_relay_completion_post(&h->relay, job->token, HAL_OK);
 
 	return HAL_OK;
 }

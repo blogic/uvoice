@@ -293,7 +293,8 @@ if(UVOICE_HAL STREQUAL "stub")
 	add_definitions(-DUVOICE_HAL_STUB)
 elseif(UVOICE_HAL STREQUAL "udsp")
 	add_definitions(-DUVOICE_HAL_UDSP)
-	list(APPEND SOURCES hal/udsp/udsp.c hal/udsp/udsp_events.c)
+	list(APPEND SOURCES hal/udsp/udsp.c hal/udsp/udsp_events.c
+	     hal/hal_relay.c hal/hal_media.c)
 
 	# The libudsp package stages the headers and the library into the
 	# staging tree, so a buildroot finds both on the default path. The two
@@ -701,6 +702,7 @@ if(UVOICE_TESTS)
 		# joins trace_ring.c for the export.
 		add_executable(test_hal_udsp ${UVOICE_TEST_DIR}/unit/test_hal_udsp.c
 			       hal/udsp/udsp.c hal/udsp/udsp_events.c
+			       hal/hal_relay.c hal/hal_media.c
 			       cfg/uci.c dialplan.c trace.c trace_ring.c pcapng.c
 			       ${UVSRTP_SRC_DIR}/uvsrtp.c
 			       ${UDSP_TEST_SRC})
