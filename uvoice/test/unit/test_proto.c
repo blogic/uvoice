@@ -279,6 +279,15 @@ enum hal_status line_led_set(enum hal_led led, enum hal_led_mode mode)
 	return HAL_OK;
 }
 
+enum hal_status line_audio_tune_set(const struct hal_audio_tune *tune)
+{
+	return HAL_OK;
+}
+
+void line_audio_tune_get(struct hal_audio_tune *tune)
+{
+}
+
 enum hal_status line_key_tone_play(unsigned int line, char digit,
 				   uint32_t duration_ms)
 {
