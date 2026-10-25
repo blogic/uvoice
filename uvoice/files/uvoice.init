@@ -26,6 +26,9 @@ USE_PROCD=1
 PROG=/usr/sbin/uvoiced
 STACK_NAME=uvoice
 STACK_LIB=/usr/srg/scripts/voice-stack.sh
+STACK_FILE=/usr/share/uvoice/stack
+HAL_FILE=/usr/share/uvoice/hal
+CSS_FIRMWARE=/lib/firmware/css-loader
 PLATFORMDB=/usr/srg/scripts/platformdb
 
 action_arg=$action
@@ -45,9 +48,19 @@ log_crit() {
 # script stays inert.
 if [ -r "$STACK_LIB" ]; then
 	. "$STACK_LIB"
+elif [ -r "$STACK_FILE" ]; then
+	voice_stack_get() { cat "$STACK_FILE"; }
 else
 	voice_stack_get() { echo none; }
 fi
+
+css_firmware_present() {
+	[ "$(cat "$HAL_FILE" 2>/dev/null)" = css ] || return 0
+	[ -f "$CSS_FIRMWARE" ] && return 0
+
+	log_info "no $CSS_FIRMWARE, uvoice inert until the CSS firmware is installed"
+	return 1
+}
 
 stack_owned() {
 	local stack
@@ -287,6 +300,7 @@ start_service() {
 	local pots
 
 	stack_owned || return 0
+	css_firmware_present || return 0
 	if [ -r "$PLATFORMDB" ]; then
 		pots="$( . "$PLATFORMDB" >/dev/null 2>&1; echo "${PDB_NUM_POTS:-1}" )"
 	else

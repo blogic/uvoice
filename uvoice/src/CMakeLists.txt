@@ -332,9 +332,47 @@ elseif(UVOICE_HAL STREQUAL "udsp")
 	# it calls (libsrtp2, libasound, and libopus in an Opus build), and
 	# uvoiced inherits them, so uvoiced names none of them.
 	list(APPEND HAL_LIBRARIES ${UDSP_LIBRARY})
+elseif(UVOICE_HAL STREQUAL "css")
+	add_definitions(-DUVOICE_HAL_CSS)
+	list(APPEND SOURCES hal/css/css.c hal/css/css_media.c hal/css/css_line.c
+	     hal/css/css_input.c hal/css/css_audio.c hal/css/css_tone.c
+	     hal/hal_relay.c hal/hal_media.c)
+
+	# The css backend synthesises its tones and ringer and drives the
+	# analogue mixer through alsa-lib, and protects the media with libuvsrtp.
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
+	list(APPEND HAL_LIBRARIES PkgConfig::ALSA pthread)
+
+	# libuvsrtp, from the staging tree in a buildroot or a named copy. The
+	# two cache variables let a bare cross or host build find it.
+	if(UVOICE_UVSRTP_INCLUDEDIR)
+		find_path(UVSRTP_INCLUDE_DIR uvsrtp/uvsrtp.h
+			  HINTS ${UVOICE_UVSRTP_INCLUDEDIR}
+			  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+	else()
+		find_path(UVSRTP_INCLUDE_DIR uvsrtp/uvsrtp.h)
+	endif()
+	if(UVOICE_UVSRTP_LIBDIR)
+		find_library(UVSRTP_LIBRARY NAMES uvsrtp HINTS ${UVOICE_UVSRTP_LIBDIR}
+			     NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+	else()
+		find_library(UVSRTP_LIBRARY NAMES uvsrtp)
+	endif()
+	foreach(dep UVSRTP_INCLUDE_DIR UVSRTP_LIBRARY)
+		if(NOT ${dep})
+			message(FATAL_ERROR
+				"${dep} not found. The css backend needs the "
+				"libuvsrtp header and library. Pass "
+				"-DUVOICE_UVSRTP_INCLUDEDIR=<dir with uvsrtp/uvsrtp.h> "
+				"and -DUVOICE_UVSRTP_LIBDIR=<dir with libuvsrtp>.")
+		endif()
+	endforeach()
+	list(APPEND HAL_INCLUDE_DIRS ${UVSRTP_INCLUDE_DIR})
+	list(APPEND HAL_LIBRARIES ${UVSRTP_LIBRARY})
 else()
 	message(FATAL_ERROR
-		"unknown UVOICE_HAL '${UVOICE_HAL}', use stub or udsp")
+		"unknown UVOICE_HAL '${UVOICE_HAL}', use stub, udsp or css")
 endif()
 
 # The core of uvoiced: the core list, the HAL arm, trace.c, dialplan.c, the
@@ -818,6 +856,33 @@ if(UVOICE_TESTS)
 	target_compile_definitions(test_hal_stub PRIVATE UVOICE_HAL_STUB)
 	target_link_libraries(test_hal_stub ${UBOX_LIBRARY} ${UBUS_LIBRARY})
 	add_test(NAME test_hal_stub COMMAND test_hal_stub)
+
+	# The css backend behind a fake /dev/css-voice and fake evdev inputs. It
+	# compiles the backend, the shared relay and media helpers and libuvsrtp
+	# from source, the way test_hal_udsp does, and drives hal_backend_ops. It
+	# builds when the libuvsrtp source, libsrtp2 and alsa-lib are present.
+	pkg_check_modules(CSS_TEST_SRTP2 IMPORTED_TARGET libsrtp2)
+	pkg_check_modules(CSS_TEST_ALSA IMPORTED_TARGET alsa)
+	if(UVSRTP_SRC_DIR AND CSS_TEST_SRTP2_FOUND AND CSS_TEST_ALSA_FOUND)
+		add_executable(test_hal_css ${UVOICE_TEST_DIR}/unit/test_hal_css.c
+			       hal/css/css.c hal/css/css_media.c hal/css/css_line.c
+			       hal/css/css_input.c hal/css/css_audio.c
+			       hal/css/css_tone.c hal/hal_relay.c hal/hal_media.c
+			       trace.c ${UVSRTP_SRC_DIR}/uvsrtp.c)
+		target_include_directories(test_hal_css PRIVATE
+					   ${UVOICE_TEST_DIR}/unit
+					   ${CMAKE_CURRENT_SOURCE_DIR}
+					   ${UBOX_INCLUDE_DIR}
+					   ${UVSRTP_SRC_DIR}/include)
+		target_compile_definitions(test_hal_css PRIVATE UVOICE_HAL_CSS)
+		target_link_libraries(test_hal_css ${UBOX_LIBRARY}
+				      PkgConfig::CSS_TEST_SRTP2 PkgConfig::CSS_TEST_ALSA
+				      m pthread)
+		add_test(NAME test_hal_css COMMAND test_hal_css)
+	else()
+		message(STATUS "test_hal_css skipped: needs the libuvsrtp source, "
+			"libsrtp2 and alsa-lib")
+	endif()
 
 	# The event publisher builds argv records and spawns the platform
 	# script. Most of the suite drives the no-spawn test mode of event.c

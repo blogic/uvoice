@@ -21,6 +21,7 @@ CMAKE_INSTALL:=1
 # reconfigures the package.
 PKG_CONFIG_DEPENDS:= \
 	CONFIG_UVOICE_HAL_UDSP \
+	CONFIG_UVOICE_HAL_CSS \
 	CONFIG_UVOICE_T38 \
 	CONFIG_UVOICE_PROTO_SIP \
 	CONFIG_UVOICE_PROTO_MGCP
@@ -28,14 +29,17 @@ PKG_CONFIG_DEPENDS:= \
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
 
-# The HAL backend is a build time choice between stub and udsp, see
+# The HAL backend is a build time choice between stub, udsp and css, see
 # Package/uvoice/config. The default choice is stub. The stub backend needs no
 # hardware and no library beside the ones uvoiced always links. The udsp backend
 # links the shared library libudsp, whose package stages its headers and
 # libudsp.so, so it needs no path variable inside a buildroot. libudsp carries
 # its own library dependencies. A build outside a buildroot passes
-# UVOICE_UDSP_INCLUDEDIR and UVOICE_UDSP_LIBDIR to cmake.
-CMAKE_OPTIONS += -DUVOICE_HAL=$(if $(CONFIG_UVOICE_HAL_UDSP),udsp,stub)
+# UVOICE_UDSP_INCLUDEDIR and UVOICE_UDSP_LIBDIR to cmake. The css backend (Snom
+# D735) links libuvsrtp and alsa-lib, both staged by their packages inside a
+# buildroot; outside one it takes UVOICE_UVSRTP_INCLUDEDIR and
+# UVOICE_UVSRTP_LIBDIR.
+CMAKE_OPTIONS += -DUVOICE_HAL=$(if $(CONFIG_UVOICE_HAL_UDSP),udsp,$(if $(CONFIG_UVOICE_HAL_CSS),css,stub))
 # The signaling protocols the image carries. The SIP entry prompts only beside
 # MGCP, and the cmake configure refuses an image with no protocol unit.
 CMAKE_OPTIONS += -DUVOICE_PROTO_SIP=$(if $(CONFIG_UVOICE_PROTO_SIP),ON,OFF)
@@ -63,6 +67,8 @@ define Package/uvoice
 	+ucode-mod-ubus \
 	+UVOICE_HAL_UDSP:libudsp \
 	+UVOICE_HAL_UDSP:alsa-utils \
+	+UVOICE_HAL_CSS:libuvsrtp \
+	+UVOICE_HAL_CSS:alsa-lib \
 	+UVOICE_T38:udsp-fax-spandsp
 endef
 
@@ -84,6 +90,9 @@ define Package/uvoice/config
 
 		config UVOICE_HAL_UDSP
 			bool "udsp: software voice DSP on ALSA and spidev"
+
+		config UVOICE_HAL_CSS
+			bool "css: Snom D735 CSS co-processor (DVF99)"
 	endchoice
 
 	config UVOICE_T38
@@ -136,6 +145,8 @@ define Package/uvoice/install
 	$(INSTALL_DATA) ./files/uvoice.sh $(1)/usr/srg/scripts/uvoice.sh
 
 	$(INSTALL_DIR) $(1)/usr/share/uvoice
+	$(if $(CONFIG_UVOICE_HAL_CSS),echo uvoice > $(1)/usr/share/uvoice/stack)
+	$(if $(CONFIG_UVOICE_HAL_CSS),echo css > $(1)/usr/share/uvoice/hal)
 	$(INSTALL_BIN) ./files/uvoice-cli.uc $(1)/usr/share/uvoice/uvoice-cli.uc
 	$(INSTALL_BIN) ./files/calltrace-wire.sh $(1)/usr/share/uvoice/calltrace-wire.sh
 	$(INSTALL_BIN) ./files/calltrace-finish.sh $(1)/usr/share/uvoice/calltrace-finish.sh
