@@ -2654,7 +2654,7 @@ static void test_conn_status(void)
 	CHECK(dump_bool_is(&b, "listener", true));
 
 	/*
-	 * See sip/tls.h "Client only is a normal state": the line registers
+	 * See shared/tls.h "Client only is a normal state": the line registers
 	 * over tls with no certificate of its own and takes no inbound
 	 * connection, and this key is the only place that is visible.
 	 */
@@ -2682,7 +2682,7 @@ static void test_conn_status(void)
 	CHECK(!dump_has_key(&b, "tls_error"));
 
 	/*
-	 * A client only TLS line is no fault (sip/tls.h). The load succeeds
+	 * A client only TLS line is no fault (shared/tls.h). The load succeeds
 	 * with no server context, and the context keeps a reason for the half
 	 * it could not build; publishing that residue would put a red error on
 	 * every line that is simply waiting for its bundle, so the caller

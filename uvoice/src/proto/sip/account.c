@@ -41,7 +41,7 @@
 #include "proto/shared/resolve.h"
 #include "proto/sip/stream.h"
 #include "proto/sip/sub.h"
-#include "proto/sip/tls.h"
+#include "proto/shared/tls.h"
 #include "proto/sip/transport.h"
 #include "proto/sip/ua.h"
 #include "str.h"
@@ -2875,7 +2875,7 @@ static const char *account_bind_device_log(struct account *a)
  * carry.
  *
  * A TLS listener with no server context stays down and the line comes up
- * anyway (sip/tls.h "Client only is a normal state"). uvoice registers over
+ * anyway (shared/tls.h "Client only is a normal state"). uvoice registers over
  * TLS and takes no inbound connection until the certificate bundle lands, and
  * accounts_tls_reload() retries the listener when it does. A TCP listener that
  * cannot bind is a failed build, exactly as a failed udp bind is.
@@ -2899,7 +2899,7 @@ static uint32_t acct_listen_take(struct account *a, int family)
 /*
  * A listener that did not open is not always a failure: a TLS line with no
  * server context is client only, and it registers and takes no inbound
- * connection until the bundle lands (sip/tls.h).
+ * connection until the bundle lands (shared/tls.h).
  */
 static bool acct_listen_optional(const struct account *a)
 {
@@ -3741,7 +3741,7 @@ static void account_reload_dispatch(struct account *a, const struct acct_cfg *nc
 /*
  * A stream line whose listener is absent. A TLS line without a server context
  * is not one of them: it is client only until the certificate bundle lands and
- * accounts_tls_reload() opens the listener then (sip/tls.h), so a recovery pass
+ * accounts_tls_reload() opens the listener then (shared/tls.h), so a recovery pass
  * that took it would never settle.
  */
 static bool acct_listener_down(const struct account *a)
@@ -3925,7 +3925,7 @@ static void acct_tls_listeners_sync(void)
 }
 
 /*
- * Build the TLS contexts from the fixed bundle paths (sip/tls.h) and the two
+ * Build the TLS contexts from the fixed bundle paths (shared/tls.h) and the two
  * tls_* options that shape them. A load that replaces contexts closes every
  * TLS connection after the load, the listener sync and the recovery settle.
  * Their session secrets belong to the bundle that is going away
@@ -4382,9 +4382,9 @@ void acct_conn_status_dump(struct blob_buf *b, enum acct_transport transport,
  * connection's when there is one, because a handshake failure is what a support
  * case asks about.
  *
- * The context error is only a fault when the client context failed. sip/tls.h
+ * The context error is only a fault when the client context failed. shared/tls.h
  * records a reason for the server half whenever there is no certificate pair
- * to build it from, and that is the normal client-only state (sip/tls.h
+ * to build it from, and that is the normal client-only state (shared/tls.h
  * "Client only is a normal state"), not a failure: the load returned true and
  * the line registers. A published residue would put a red error on every line
  * that only waits for its bundle.

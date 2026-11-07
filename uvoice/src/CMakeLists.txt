@@ -227,7 +227,7 @@ if(UVOICE_PROTO_SIP)
 				   ${UBOX_INCLUDE_DIR})
 
 	add_library(uvoice_sip_stream OBJECT proto/sip/stream.c
-		    proto/sip/tls.c)
+		    proto/shared/tls.c)
 	target_include_directories(uvoice_sip_stream PUBLIC
 				   ${CMAKE_CURRENT_SOURCE_DIR}
 				   ${UBOX_INCLUDE_DIR})

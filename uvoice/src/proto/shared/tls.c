@@ -6,15 +6,16 @@
  *
  * Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
  *
- * TLS for the SIP stream transport. See sip/tls.h for the contracts.
+ * TLS for the SIP stream transport and the XMPP stream. See shared/tls.h for
+ * the contracts.
  *
- * The OpenSSL include lives here and only here: sip/tls.h names the two
+ * The OpenSSL include lives here and only here: shared/tls.h names the two
  * library objects as opaque struct pointers, so no other translation unit
- * inherits the library headers (sip/tls.h "No OpenSSL in this header").
+ * inherits the library headers (shared/tls.h "No OpenSSL in this header").
  *
  * Two contexts, one struct. The client context is the only one a load has to
  * produce. A configuration that names no certificate pair is a working
- * configuration (sip/tls.h "Client only is a normal state"), so every server
+ * configuration (shared/tls.h "Client only is a normal state"), so every server
  * side failure records a reason and returns success. The one exception is the
  * trust store of a verifying client: a client that must verify and has no
  * anchor to verify against cannot open a connection at all, so that failure
@@ -49,7 +50,7 @@
 #include <openssl/ssl.h>
 
 #include "str.h"
-#include "proto/sip/tls.h"
+#include "proto/shared/tls.h"
 
 /*
  * The version numbers are fixed to the library's own values, so the
@@ -194,7 +195,7 @@ static void keylog_cb(const SSL *ssl, const char *line)
 }
 
 /*
- * The bound of sip/tls.h belongs to the FILE, not to one run of the daemon, so
+ * The bound of shared/tls.h belongs to the FILE, not to one run of the daemon, so
  * the count starts at what the named file already holds. A daemon that
  * restarts and reopens a log near the bound rotates it on the next line
  * instead of appending a whole cycle past it. A file that is not there yet,
@@ -277,7 +278,7 @@ static bool client_build(struct sip_tls *t, const struct sip_tls_cfg *cfg)
 
 	/*
 	 * SSL_VERIFY_PEER checks the chain and nothing else. The peer name is
-	 * never checked here, in either mode: sip/tls.h "No hostname
+	 * never checked here, in either mode: shared/tls.h "No hostname
 	 * verification" records the deviation from RFC 5922 section 7.3 and
 	 * the reason for it.
 	 */

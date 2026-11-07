@@ -6,13 +6,14 @@
  *
  * Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
  *
- * TLS for the SIP stream transport (src/proto/sip/tls.c).
+ * TLS for the SIP stream transport and the XMPP stream
+ * (src/proto/shared/tls.c).
  *
  * What it is. A thin wrapper around one OpenSSL 3 client context and one
  * OpenSSL 3 server context, plus the per connection operations the stream
  * engine drives. It owns no socket, no timer and no connection state machine:
- * sip/stream.h owns those, and this layer answers "what does the record layer
- * want next".
+ * sip/stream.h and the XMPP stream own those, and this layer answers "what
+ * does the record layer want next".
  *
  * No OpenSSL in this header. Every OpenSSL type appears here as an opaque
  * struct pointer, so a translation unit that includes sip/stream.h does not
@@ -58,8 +59,8 @@
  * It holds session secrets: it is a debug facility, off by default, and never
  * a default path in the shipped configuration.
  */
-#ifndef UVOICE_SIP_TLS_H
-#define UVOICE_SIP_TLS_H
+#ifndef UVOICE_SHARED_TLS_H
+#define UVOICE_SHARED_TLS_H
 
 #include <stdbool.h>
 #include <stddef.h>

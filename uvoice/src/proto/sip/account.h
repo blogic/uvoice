@@ -490,7 +490,7 @@ void acct_sub_status_dump(struct blob_buf *b, bool subscribe,
  * conn is the connection serving the line's registration destination, or NULL.
  * listener says whether the line's inbound listener is up, and every stream
  * transport reports it: a TLS line because client only is a normal state
- * (sip/tls.h "Client only is a normal state"), where it registers and takes
+ * (shared/tls.h "Client only is a normal state"), where it registers and takes
  * no inbound connection until the certificate bundle lands, and a TCP line
  * because a listener that did not come back after an interface move is down
  * just as silently. tls_err is the connection error, else a client context
@@ -606,7 +606,7 @@ void accounts_hal_features_set(uint32_t features);
 /*
  * Load the TLS contexts again from the certificate bundle on disk and close
  * every TLS connection built on the old one, whose session secrets belong to
- * the bundle that is going away (sip/tls.h sip_tls_ctx_load). A TLS listener
+ * the bundle that is going away (shared/tls.h sip_tls_ctx_load). A TLS listener
  * that stayed down for a missing certificate is retried here, which is what
  * turns a fetched bundle into an inbound service without a reload.
  *

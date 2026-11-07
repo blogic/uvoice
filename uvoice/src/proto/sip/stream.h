@@ -17,7 +17,7 @@
  * stack transport agnostic.
  *
  * Dependencies. uloop, the socket API, sip/frame.h for the framing and
- * sip/tls.h for the record layer. This is a daemon file, like transport.c and
+ * shared/tls.h for the record layer. This is a daemon file, like transport.c and
  * txn_uloop.c. It includes sip/transport.h for three shared constants
  * (SIP_TOS_UNSET, SIP_SOCK_IFACE_MAX, SIP_SOCK_HOST_MAX) and for nothing else;
  * no function of the UDP transport is called from here, so the include adds no
@@ -169,7 +169,7 @@
 
 #include "proto/sip/frame.h"
 #include "proto/shared/msg.h"
-#include "proto/sip/tls.h"
+#include "proto/shared/tls.h"
 #include "proto/sip/transport.h"
 #include "proto/proto_tap.h"
 #include "proto/sip/txn.h"
@@ -261,7 +261,7 @@ bool sip_stream_key_eq(const struct sip_stream_key *a, const struct sip_stream_k
  * iface    SO_BINDTODEVICE when it is not NULL and not empty.
  * port     sip_local_port. 0 is refused: a listener needs a known port.
  * kind     TCP or TLS. A TLS listener needs a loaded server context and stays
- *          down without one (sip/tls.h "Client only is a normal state").
+ *          down without one (shared/tls.h "Client only is a normal state").
  * family   AF_INET or AF_INET6; 0 takes AF_INET, as struct sip_sock_cfg does.
  *          An AF_INET6 listener is opened with IPV6_V6ONLY. It joins the
  *          listener identity, so two families never share one slot.

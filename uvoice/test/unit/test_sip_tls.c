@@ -6,7 +6,7 @@
  *
  * Licensed under GPL-2.0-only with the linking exception stated in LICENSE.
  *
- * Unit tests for the TLS wrapper (src/proto/sip/tls.c).
+ * Unit tests for the TLS wrapper (src/proto/shared/tls.c).
  *
  * Both ends in one process. Every handshake except one runs over a non blocking
  * socketpair(AF_UNIX, SOCK_STREAM), with the client on one end and the server
@@ -28,11 +28,11 @@
  * expression. A silent skip would report a pass for a suite that verifies
  * nothing about certificates.
  *
- * The OpenSSL queries. The header sip/tls.h keeps the library out, but the
+ * The OpenSSL queries. The header shared/tls.h keeps the library out, but the
  * suite includes the library on purpose. The minimum protocol version, the
  * negotiated version and the server_name that the server received are
  * properties of the OpenSSL objects. Only a query to the library can assert
- * that tls.c set them. sip/tls.h declares struct ssl_st and struct ssl_ctx_st,
+ * that tls.c set them. shared/tls.h declares struct ssl_st and struct ssl_ctx_st,
  * which OpenSSL defines, so its pointers pass into the library with no cast.
  */
 #include <fcntl.h>
@@ -50,7 +50,7 @@
 #include <openssl/ssl.h>
 
 #include "proto/sip/tap.h"
-#include "proto/sip/tls.h"
+#include "proto/shared/tls.h"
 #include "proto_host_fake.h"
 #include "test_util.h"
 
@@ -765,7 +765,7 @@ static void t_verify(void)
 	pair_close(&p);
 
 	/*
-	 * See sip/tls.h "No hostname verification": chain verification never
+	 * See shared/tls.h "No hostname verification": chain verification never
 	 * checks the peer name, so a certificate for sip.example.test serves a
 	 * connection that asked for wrong.name.test. This case exists to fail
 	 * the day someone adds SSL_set1_host().

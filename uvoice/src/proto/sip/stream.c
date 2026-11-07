@@ -514,7 +514,7 @@ static int tcp_write(struct sip_conn *c, const char *buf, size_t len, size_t *do
 }
 
 /*
- * sip/tls.h states that a write can want a read: the caller must wait for the
+ * shared/tls.h states that a write can want a read: the caller must wait for the
  * mask the record layer names and never for the one its own direction
  * suggests.
  *
@@ -735,7 +735,7 @@ static enum rx_step tcp_read(struct sip_conn *c, char *buf, size_t len, size_t *
 	return (errno == EAGAIN || errno == EWOULDBLOCK) ? RX_IDLE : RX_FAIL;
 }
 
-/* sip/tls.h: SIP_TLS_OK with no bytes is the peer's close_notify */
+/* shared/tls.h: SIP_TLS_OK with no bytes is the peer's close_notify */
 static enum rx_step tls_read(struct sip_conn *c, char *buf, size_t len, size_t *got,
 			     unsigned int *want)
 {
@@ -1687,7 +1687,7 @@ static bool listen_cfg_ok(struct sip_stream *st, const struct sip_stream_listen_
 		return false;
 	}
 
-	/* sip/tls.h "Client only is a normal state": a TLS listener stays down
+	/* shared/tls.h "Client only is a normal state": a TLS listener stays down
 	 * until the certificate bundle lands */
 	if (cfg->kind == SIP_STREAM_TLS && !sip_tls_server_ready(st->tls)) {
 		errno = ENOTSUP;
