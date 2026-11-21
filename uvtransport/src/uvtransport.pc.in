@@ -1,0 +1,11 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: uvtransport
+Description: ICE and DTLS-SRTP media transport over libjuice, OpenSSL and libuvsrtp
+Version: @UVTRANSPORT_VERSION@
+Requires: uvsrtp openssl
+Libs: -L${libdir} -luvtransport
+Cflags: -I${includedir}
