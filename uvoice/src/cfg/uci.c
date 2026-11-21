@@ -1303,6 +1303,40 @@ static const struct cfg_field channel_dialplan_fields[] = {
 	FIELD_LAST
 };
 
+#define FIELD_SPEED_DIAL(i) \
+	FIELD(STR, "xmpp_speed_dial_" #i, xmpp_speed_dial[i])
+
+_Static_assert(CFG_XMPP_SPEED_DIAL_MAX == 10,
+	       "channel_xmpp_fields must list every speed dial");
+
+static const struct cfg_field channel_xmpp_fields[] = {
+	FIELD(ENUM_IDX, "account_type", account_type),
+	FIELD(STR, "xmpp_jid", xmpp_jid),
+	FIELD_SECRET(STR, "xmpp_password", xmpp_password),
+	FIELD(STR, "xmpp_resource", xmpp_resource),
+	FIELD(STR, "xmpp_host", xmpp_host),
+	FIELD(UINT0, "xmpp_port", xmpp_port),
+	FIELD(BOOL, "xmpp_direct_tls", xmpp_direct_tls),
+	FIELD(BOOL, "xmpp_tls_verify", xmpp_tls_verify),
+	FIELD(BOOL, "xmpp_allow_plain", xmpp_allow_plain),
+	FIELD(STR, "xmpp_tls_ca", xmpp_tls_ca),
+	FIELD(STR, "xmpp_stun", xmpp_stun),
+	FIELD(STR, "xmpp_turn", xmpp_turn),
+	FIELD(STR, "xmpp_turn_user", xmpp_turn_user),
+	FIELD_SECRET(STR, "xmpp_turn_password", xmpp_turn_password),
+	FIELD_SPEED_DIAL(0),
+	FIELD_SPEED_DIAL(1),
+	FIELD_SPEED_DIAL(2),
+	FIELD_SPEED_DIAL(3),
+	FIELD_SPEED_DIAL(4),
+	FIELD_SPEED_DIAL(5),
+	FIELD_SPEED_DIAL(6),
+	FIELD_SPEED_DIAL(7),
+	FIELD_SPEED_DIAL(8),
+	FIELD_SPEED_DIAL(9),
+	FIELD_LAST
+};
+
 #define FIELD_RING(i) \
 	FIELD(STR, "distinctive_ring_" #i, distinctive_ring[i]), \
 	FIELD_FLAGGED(UINT_SET, "distinctive_ring_def_" #i, NULL, \
@@ -1521,6 +1555,7 @@ static void channel_parse(struct cfg *cfg, struct uci_context *ctx, struct uci_s
 	channel_media_parse(ch, ctx, s);
 	fields_parse(channel_ec_fields, ctx, s, tbl, false, ch);
 	fields_parse(channel_timer_fields, ctx, s, tbl, false, &ch->timers);
+	fields_parse(channel_xmpp_fields, ctx, s, tbl, false, ch);
 }
 
 static bool codec_precedes(const struct cfg_codec *candidate,
@@ -1787,6 +1822,7 @@ static void channel_dump(const struct cfg_channel *ch, struct blob_buf *b)
 	timers = blobmsg_open_table(b, "timers");
 	channel_timers_dump(&ch->timers, b);
 	blobmsg_close_table(b, timers);
+	fields_dump(channel_xmpp_fields, tbl, ch, b);
 }
 
 static void hal_dump(const struct cfg_hal *hal, struct blob_buf *b)

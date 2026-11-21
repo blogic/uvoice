@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "uvoice-api-schema.json",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "title": "uvoice ubus API",
   "description": "Every ubus method the uvoiced daemon answers, on the voice, voice.trace, voice.calltrace and voice.stub objects (voice.stub exists on the UVOICE_HAL_STUB build only). With voip.base.ui desk the voice object also emits the notifications call, device and registration; registration and cdr go out under every ui. Their payloads are $defs DeskCallEvent, DeskDevice, RegistrationEvent and CdrEvent. The root validates one capture envelope {object, method, args, reply}; args may be absent for a NOARG method, reply may be absent for a call answered with a bare status code. Owning functions are cited per property.",
   "type": "object",
@@ -36,6 +36,7 @@
     { "$ref": "#/$defs/DeskMissedCall" },
     { "$ref": "#/$defs/DeskCallsCall" },
     { "$ref": "#/$defs/DeskAccountsCall" },
+    { "$ref": "#/$defs/DeskRosterCall" },
     { "$ref": "#/$defs/DeskAudioGetCall" },
     { "$ref": "#/$defs/DeskAudioSetCall" },
     { "$ref": "#/$defs/DeskRingPreviewCall" },
@@ -197,7 +198,7 @@
         "connected": { "$ref": "#/$defs/U32" },
         "codec": { "$ref": "#/$defs/SdpCodecWord", "description": "Committed session only; t38 for an image session." },
         "ptime": { "$ref": "#/$defs/U32", "description": "Committed ptime ms; 0 on a T.38 session." },
-        "reason": { "enum": ["local", "remote_bye", "busy", "rejected", "unavailable", "failed", "cancelled", "transferred"] }
+        "reason": { "enum": ["local", "remote_bye", "busy", "rejected", "unavailable", "failed", "cancelled", "transferred", "answered_elsewhere"] }
       },
       "required": ["call", "line", "slot", "state", "direction", "number", "name", "focused", "since", "connected"],
       "dependentRequired": {
@@ -230,7 +231,7 @@
     },
     "DeskAccountsReply": {
       "type": "object",
-      "description": "proto/sip/line.c sip_desk_accounts_dump(): the enabled channels. label is sip_callerid_name, or sip_username when that is empty.",
+      "description": "proto/sip/line.c sip_desk_accounts_dump(): the enabled channels. label is sip_callerid_name, or sip_username when that is empty; on an xmpp line it is the JID. type names the account layer of the line.",
       "properties": {
         "accounts": {
           "type": "array",
@@ -240,14 +241,67 @@
               "line": { "$ref": "#/$defs/U32" },
               "label": { "type": "string" },
               "user": { "type": "string" },
+              "type": { "enum": ["sip", "xmpp"] },
               "registered": { "type": "boolean" }
             },
-            "required": ["line", "label", "user", "registered"],
+            "required": ["line", "label", "user", "type", "registered"],
             "additionalProperties": false
           }
         }
       },
       "required": ["accounts"],
+      "additionalProperties": false
+    },
+    "XmppAccountEntry": {
+      "type": "object",
+      "description": "proto/xmpp/account.c account_dump(): the stream of one XMPP line (proto/xmpp/stream.h), its relays and its Jingle legs (proto/xmpp/call.c xcalls_status_dump()).",
+      "properties": {
+        "line": { "$ref": "#/$defs/U32" },
+        "jid": { "type": "string", "description": "The bare JID of the account." },
+        "bound": { "type": "string", "description": "The full JID the server bound, the bare one before the bind." },
+        "state": { "enum": ["idle", "resolve", "connect", "tls", "features", "starttls", "sasl", "bind", "session", "sm", "carbons", "ready", "backoff"] },
+        "reason": { "type": "string", "description": "Why the last connection ended, empty when none did." },
+        "tls": { "type": "boolean" },
+        "sm": { "type": "boolean", "description": "XEP-0198 stream management is on." },
+        "carbons": { "type": "boolean", "description": "XEP-0280 message carbons are on." },
+        "contacts": { "$ref": "#/$defs/U32" },
+        "connects": { "$ref": "#/$defs/U64" },
+        "failures": { "$ref": "#/$defs/U64" },
+        "rx_stanzas": { "$ref": "#/$defs/U64" },
+        "tx_stanzas": { "$ref": "#/$defs/U64" },
+        "relays": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "enum": ["stun", "turn"] },
+              "host": { "type": "string" },
+              "port": { "$ref": "#/$defs/U32" },
+              "address": { "type": "string", "description": "The resolved address, empty until the resolver answered." }
+            },
+            "required": ["type", "host", "port", "address"],
+            "additionalProperties": false
+          }
+        },
+        "jingle": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "slot": { "$ref": "#/$defs/U32" },
+              "state": { "enum": ["free", "proposed", "offered", "proceeded", "initiated", "active"] },
+              "sid": { "type": "string" },
+              "peer": { "type": "string" },
+              "inbound": { "type": "boolean" },
+              "answered": { "type": "boolean" },
+              "media": { "type": "boolean", "description": "The DTLS handshake finished and media flows." }
+            },
+            "required": ["slot", "state", "sid", "peer", "inbound", "answered", "media"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["line", "jid", "bound", "state", "reason", "tls", "sm", "carbons", "contacts", "connects", "failures", "rx_stanzas", "tx_stanzas", "relays", "jingle"],
       "additionalProperties": false
     },
     "RegistrationEvent": {
@@ -465,6 +519,36 @@
         "object": { "const": "voice" },
         "method": { "const": "accounts" },
         "reply": { "$ref": "#/$defs/DeskAccountsReply" }
+      },
+      "required": ["object", "method"],
+      "additionalProperties": false
+    },
+    "DeskRosterCall": {
+      "type": "object",
+      "description": "proto/sip/proto.c sip_desk_rows[] on a UVOICE_XMPP build, present while voip.base.ui is desk: the contacts of every XMPP account (proto/xmpp/account.c xmpp_roster_dump()).",
+      "properties": {
+        "object": { "const": "voice" },
+        "method": { "const": "roster" },
+        "reply": {
+          "type": "object",
+          "properties": {
+            "roster": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "line": { "$ref": "#/$defs/U32" },
+                  "jid": { "type": "string" },
+                  "name": { "type": "string" }
+                },
+                "required": ["line", "jid", "name"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["roster"],
+          "additionalProperties": false
+        }
       },
       "required": ["object", "method"],
       "additionalProperties": false
@@ -1374,6 +1458,11 @@
           "type": "array",
           "description": "proto/proto.h ops->status_dump_lines; see oneOf."
         },
+        "xmpp": {
+          "type": "array",
+          "description": "proto/xmpp/account.c xmpp_accounts_status_dump(): one entry per line that runs an XMPP account, present on a UVOICE_XMPP build with the sip protocol.",
+          "items": { "$ref": "#/$defs/XmppAccountEntry" }
+        },
         "network": {
           "type": "object",
           "description": "net/iface.c net_iface_status_dump(); address is the IPv4 address of the voice interface, address6 the global IPv6 address of its netdev (any netifd interface on that netdev may report it), and l3_device the netdev itself. Each key is present only while its own value is known, and the whole table is omitted when none of the three is.",
@@ -1767,9 +1856,10 @@
         "dialplan": { "type": "boolean" },
         "media": { "type": "boolean" },
         "jb": { "type": "boolean" },
-        "mgcp": { "type": "boolean" }
+        "mgcp": { "type": "boolean" },
+        "xmpp": { "type": "boolean" }
       },
-      "required": ["sip", "fsm", "hook", "hal", "dialplan", "media", "jb", "mgcp"],
+      "required": ["sip", "fsm", "hook", "hal", "dialplan", "media", "jb", "mgcp", "xmpp"],
       "additionalProperties": false
     },
 
@@ -1784,7 +1874,8 @@
         "dialplan": { "type": "boolean" },
         "media": { "type": "boolean" },
         "jb": { "type": "boolean" },
-        "mgcp": { "type": "boolean" }
+        "mgcp": { "type": "boolean" },
+        "xmpp": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -2212,9 +2303,31 @@
         "rtp_local_port_min": { "$ref": "#/$defs/U32" },
         "rtp_local_port_max": { "$ref": "#/$defs/U32" },
         "rtcp_cname": { "type": "string" },
-        "timers": { "$ref": "#/$defs/ChannelTimersTable" }
+        "timers": { "$ref": "#/$defs/ChannelTimersTable" },
+        "account_type": { "enum": ["sip", "xmpp"], "description": "uci.c channel_xmpp_fields: sip registers the line with the SIP account layer, xmpp binds it to an XMPP account (proto/xmpp/account.h)." },
+        "xmpp_jid": { "type": "string" },
+        "xmpp_resource": { "type": "string" },
+        "xmpp_host": { "type": "string" },
+        "xmpp_port": { "$ref": "#/$defs/U32", "description": "0 takes 5222, or 5223 with xmpp_direct_tls." },
+        "xmpp_direct_tls": { "type": "boolean" },
+        "xmpp_tls_verify": { "type": "boolean" },
+        "xmpp_allow_plain": { "type": "boolean" },
+        "xmpp_tls_ca": { "type": "string" },
+        "xmpp_stun": { "type": "string", "description": "host[:port] of a STUN server, beside what XEP-0215 discovers." },
+        "xmpp_turn": { "type": "string", "description": "host[:port] of a TURN server, beside what XEP-0215 discovers." },
+        "xmpp_turn_user": { "type": "string" },
+        "xmpp_speed_dial_0": { "type": "string", "description": "digits=jid, the JID a dialled digit string stands for." },
+        "xmpp_speed_dial_1": { "type": "string" },
+        "xmpp_speed_dial_2": { "type": "string" },
+        "xmpp_speed_dial_3": { "type": "string" },
+        "xmpp_speed_dial_4": { "type": "string" },
+        "xmpp_speed_dial_5": { "type": "string" },
+        "xmpp_speed_dial_6": { "type": "string" },
+        "xmpp_speed_dial_7": { "type": "string" },
+        "xmpp_speed_dial_8": { "type": "string" },
+        "xmpp_speed_dial_9": { "type": "string" }
       },
-      "required": ["id", "enabled", "sip_username", "sip_auth_username", "sip_callerid_name", "sip_proxy", "sip_outbound_proxy", "sip_domain", "sip_registrar", "sip_realm", "transport", "local_interface", "sip_port", "sip_port_set", "sip_outbound_proxy_port", "sip_registrar_port", "sip_registration_expiry", "sip_register_retry", "sip_local_port", "sip_tos", "options_interval", "sip_dtmf_mode", "sip_flash_relay", "sip_session_max_expires", "sip_session_min_interval", "sip_session_refresher", "sip_timer_c", "digit_map", "digit_esc_enabled", "start_digit_timer", "interdigit_timeout", "interdigit_timeout_long", "roh_timer_sec", "busy_tone_timer_sec", "flash_service_timer_sec", "call_waiting_enabled", "call_waiting_local_set", "call_waiting_enable_exten", "call_waiting_disable_exten", "call_waiting_query_exten", "cid_remote_enable", "cid_outgoing_enable", "cid_delivery_local_set", "cid_enable_exten", "cid_disable_exten", "cid_single_call_enable_exten", "cid_single_call_disable_exten", "call_fwd_local", "call_fwd_local_mode", "call_fwd_uncond_uri", "call_fwd_busy_uri", "call_fwd_no_answer_uri", "call_fwd_no_answer_timeout", "call_fwd_uncond_exten", "call_fwd_uncond_cancel_exten", "call_fwd_uncond_query_exten", "call_fwd_busy_exten", "call_fwd_busy_cancel_exten", "call_fwd_busy_query_exten", "call_fwd_no_answer_exten", "call_fwd_no_answer_cancel_exten", "call_fwd_no_answer_query_exten", "call_fwd_unreachable_exten", "call_fwd_unreachable_cancel_exten", "call_fwd_all_exten", "call_fwd_all_cancel_exten", "blind_transfer_exten", "attended_transfer_exten", "consult_transfer_exten", "do_not_disturb_enabled", "do_not_disturb_on_exten", "do_not_disturb_off_exten", "distinctive_ring_enable", "distinctive_ring_0", "distinctive_ring_1", "distinctive_ring_2", "distinctive_ring_3", "distinctive_ring_4", "distinctive_ring_5", "distinctive_ring_6", "distinctive_ring_7", "distinctive_ring_8", "distinctive_ring_9", "warmline_enable", "warmline_number", "warmline_timeout", "forward_disconnect_delay", "forward_disconnect_battery", "amwi", "vmwi", "lec_control_set", "lec_enable", "lec_nlp_set", "lec_tone_latch", "lec_tone_force_disable", "half_db_rx_loss", "half_db_tx_loss", "ps_tx_gain", "ps_rx_gain", "local_conf_enabled", "default_packetization_rate", "cn_enable", "g711a_ptype", "g729a_ptype", "g726_ptype", "g722_ptype", "opus_ptype", "fax_t38_enable", "fax_upspeed_follow", "prack", "early_media_enabled", "jitter_target", "jitter_buffer_max", "rtp_tos", "rtcp_tos", "rtp_local_port_min", "rtp_local_port_max", "rtcp_cname", "timers"],
+      "required": ["id", "enabled", "sip_username", "sip_auth_username", "sip_callerid_name", "sip_proxy", "sip_outbound_proxy", "sip_domain", "sip_registrar", "sip_realm", "transport", "local_interface", "sip_port", "sip_port_set", "sip_outbound_proxy_port", "sip_registrar_port", "sip_registration_expiry", "sip_register_retry", "sip_local_port", "sip_tos", "options_interval", "sip_dtmf_mode", "sip_flash_relay", "sip_session_max_expires", "sip_session_min_interval", "sip_session_refresher", "sip_timer_c", "digit_map", "digit_esc_enabled", "start_digit_timer", "interdigit_timeout", "interdigit_timeout_long", "roh_timer_sec", "busy_tone_timer_sec", "flash_service_timer_sec", "call_waiting_enabled", "call_waiting_local_set", "call_waiting_enable_exten", "call_waiting_disable_exten", "call_waiting_query_exten", "cid_remote_enable", "cid_outgoing_enable", "cid_delivery_local_set", "cid_enable_exten", "cid_disable_exten", "cid_single_call_enable_exten", "cid_single_call_disable_exten", "call_fwd_local", "call_fwd_local_mode", "call_fwd_uncond_uri", "call_fwd_busy_uri", "call_fwd_no_answer_uri", "call_fwd_no_answer_timeout", "call_fwd_uncond_exten", "call_fwd_uncond_cancel_exten", "call_fwd_uncond_query_exten", "call_fwd_busy_exten", "call_fwd_busy_cancel_exten", "call_fwd_busy_query_exten", "call_fwd_no_answer_exten", "call_fwd_no_answer_cancel_exten", "call_fwd_no_answer_query_exten", "call_fwd_unreachable_exten", "call_fwd_unreachable_cancel_exten", "call_fwd_all_exten", "call_fwd_all_cancel_exten", "blind_transfer_exten", "attended_transfer_exten", "consult_transfer_exten", "do_not_disturb_enabled", "do_not_disturb_on_exten", "do_not_disturb_off_exten", "distinctive_ring_enable", "distinctive_ring_0", "distinctive_ring_1", "distinctive_ring_2", "distinctive_ring_3", "distinctive_ring_4", "distinctive_ring_5", "distinctive_ring_6", "distinctive_ring_7", "distinctive_ring_8", "distinctive_ring_9", "warmline_enable", "warmline_number", "warmline_timeout", "forward_disconnect_delay", "forward_disconnect_battery", "amwi", "vmwi", "lec_control_set", "lec_enable", "lec_nlp_set", "lec_tone_latch", "lec_tone_force_disable", "half_db_rx_loss", "half_db_tx_loss", "ps_tx_gain", "ps_rx_gain", "local_conf_enabled", "default_packetization_rate", "cn_enable", "g711a_ptype", "g729a_ptype", "g726_ptype", "g722_ptype", "opus_ptype", "fax_t38_enable", "fax_upspeed_follow", "prack", "early_media_enabled", "jitter_target", "jitter_buffer_max", "rtp_tos", "rtcp_tos", "rtp_local_port_min", "rtp_local_port_max", "rtcp_cname", "timers", "account_type", "xmpp_jid", "xmpp_resource", "xmpp_host", "xmpp_port", "xmpp_direct_tls", "xmpp_tls_verify", "xmpp_allow_plain", "xmpp_tls_ca", "xmpp_stun", "xmpp_turn", "xmpp_turn_user", "xmpp_speed_dial_0", "xmpp_speed_dial_1", "xmpp_speed_dial_2", "xmpp_speed_dial_3", "xmpp_speed_dial_4", "xmpp_speed_dial_5", "xmpp_speed_dial_6", "xmpp_speed_dial_7", "xmpp_speed_dial_8", "xmpp_speed_dial_9"],
       "additionalProperties": false
     },
 

@@ -28,6 +28,7 @@ static const char * const domain_names[TRACE_DOMAIN_MAX] = {
 	[TRACE_MEDIA] = "media",
 	[TRACE_JB] = "jb",
 	[TRACE_MGCP] = "mgcp",
+	[TRACE_XMPP] = "xmpp",
 };
 
 /*

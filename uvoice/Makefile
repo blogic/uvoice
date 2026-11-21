@@ -24,7 +24,8 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_UVOICE_HAL_CSS \
 	CONFIG_UVOICE_T38 \
 	CONFIG_UVOICE_PROTO_SIP \
-	CONFIG_UVOICE_PROTO_MGCP
+	CONFIG_UVOICE_PROTO_MGCP \
+	CONFIG_UVOICE_XMPP
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -44,6 +45,11 @@ CMAKE_OPTIONS += -DUVOICE_HAL=$(if $(CONFIG_UVOICE_HAL_UDSP),udsp,$(if $(CONFIG_
 # MGCP, and the cmake configure refuses an image with no protocol unit.
 CMAKE_OPTIONS += -DUVOICE_PROTO_SIP=$(if $(CONFIG_UVOICE_PROTO_SIP),ON,OFF)
 CMAKE_OPTIONS += -DUVOICE_PROTO_MGCP=$(if $(CONFIG_UVOICE_PROTO_MGCP),ON,OFF)
+# XMPP accounts with Jingle calls, an opt-in of the SIP unit. It adds expat
+# for the stream parser and libuvtransport for the ICE and DTLS-SRTP media
+# of the backend. The DTLS of libuvtransport needs an OpenSSL built with
+# CONFIG_OPENSSL_WITH_DTLS.
+CMAKE_OPTIONS += -DUVOICE_XMPP=$(if $(CONFIG_UVOICE_XMPP),ON,OFF)
 # PKG_VERSION is the single source; uvoice.h requires UVOICE_VERSION at compile
 # time.
 CMAKE_OPTIONS += -DUVOICE_VERSION=$(PKG_VERSION)
@@ -70,7 +76,9 @@ define Package/uvoice
 	+UVOICE_HAL_UDSP:alsa-utils \
 	+UVOICE_HAL_CSS:libuvsrtp \
 	+UVOICE_HAL_CSS:alsa-lib \
-	+UVOICE_T38:udsp-fax-spandsp
+	+UVOICE_T38:udsp-fax-spandsp \
+	+UVOICE_XMPP:libexpat \
+	+UVOICE_XMPP:libuvtransport
 endef
 
 define Package/uvoice/description
@@ -125,6 +133,18 @@ define Package/uvoice/config
 		  selects it at the daemon start. The unit links no OpenSSL,
 		  so an image with MGCP alone carries no libopenssl. With
 		  this option set, UVOICE_PROTO_SIP can be turned off.
+
+	config UVOICE_XMPP
+		bool "XMPP accounts with Jingle calls"
+		depends on UVOICE_PROTO_SIP
+		default n
+		help
+		  Lets a desk line bind to an XMPP account instead of a SIP
+		  registration (voip.channelN.account_type xmpp) and carry
+		  calls with Jingle over ICE and DTLS-SRTP, including the
+		  Jingle Message Initiation that rings every device of the
+		  account. It adds libexpat and libuvtransport to the image
+		  and needs an OpenSSL with CONFIG_OPENSSL_WITH_DTLS.
 endef
 
 define Build/Prepare

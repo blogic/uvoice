@@ -53,6 +53,8 @@ static const char *const cfg_bool_vals[] = { "0", "1", NULL };
 static const char *const cfg_voip_model_vals[] = { "1", "2", NULL };
 static const char *const cfg_transport_vals[] = { "udp", "tcp", "tls", NULL };
 static const char *const cfg_protocol_vals[] = { "sip", "mgcp", NULL };
+/* enum cfg_account_type order */
+static const char *const cfg_account_type_vals[] = { "sip", "xmpp", NULL };
 static const char *const cfg_ui_vals[] = { "fxs", "desk", NULL };
 /* enum cfg_mgcp_dialect, cfg_mgcp_quarantine and cfg_mgcp_reply order */
 static const char *const cfg_mgcp_dialect_vals[] = { "rfc3435", "ncs", NULL };
@@ -501,6 +503,33 @@ static const struct cfg_option_desc cfg_channel_options[] = {
 	CFG_DESC("distinctive_ring_def_7", CFG_INT, NULL, 0, 7, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
 	CFG_DESC("distinctive_ring_def_8", CFG_INT, NULL, 0, 7, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
 	CFG_DESC("distinctive_ring_def_9", CFG_INT, NULL, 0, 7, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	/* The XMPP account of a desk line (proto/xmpp/account.h), read only
+	 * with UVOICE_XMPP. The account rows rebuild the stream on a move, the
+	 * ICE servers and the speed dial reach the next call. */
+	CFG_DESC("account_type", CFG_ENUM, "sip", 0, 0, cfg_account_type_vals, APPLY_RESTART_LINE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_jid", CFG_STRING, "", 0, 0, NULL, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_password", CFG_STRING, "", 0, 0, NULL, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_resource", CFG_STRING, "", 0, 0, NULL, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_host", CFG_STRING, "", 0, 0, NULL, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_port", CFG_INT, NULL, 1, 65535, NULL, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_direct_tls", CFG_BOOL, "0", 0, 1, cfg_bool_vals, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_tls_verify", CFG_BOOL, "1", 0, 1, cfg_bool_vals, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_allow_plain", CFG_BOOL, "1", 0, 1, cfg_bool_vals, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_tls_ca", CFG_STRING, "", 0, 0, NULL, APPLY_REREG, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_stun", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_turn", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_turn_user", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_turn_password", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_0", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_1", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_2", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_3", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_4", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_5", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_6", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_7", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_8", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
+	CFG_DESC("xmpp_speed_dial_9", CFG_STRING, "", 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL),
 	{ NULL, CFG_STRING, NULL, 0, 0, NULL, APPLY_LIVE, SUP_SUPPORTED, NULL }
 };
 

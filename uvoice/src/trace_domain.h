@@ -25,6 +25,7 @@ enum trace_domain {
 	TRACE_MEDIA,
 	TRACE_JB,
 	TRACE_MGCP,
+	TRACE_XMPP,
 	TRACE_DOMAIN_MAX,
 };
 

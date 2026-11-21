@@ -1425,6 +1425,7 @@ static const struct blobmsg_policy trace_policy[TRACE_DOMAIN_MAX] = {
 	[TRACE_MEDIA] = { "media", BLOBMSG_TYPE_BOOL },
 	[TRACE_JB] = { "jb", BLOBMSG_TYPE_BOOL },
 	[TRACE_MGCP] = { "mgcp", BLOBMSG_TYPE_BOOL },
+	[TRACE_XMPP] = { "xmpp", BLOBMSG_TYPE_BOOL },
 };
 
 static int trace_set(struct ubus_context *ctx, struct ubus_object *obj,

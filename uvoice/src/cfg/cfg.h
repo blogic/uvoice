@@ -95,6 +95,18 @@ struct cfg_codec {
 	unsigned int complexity;
 };
 
+/*
+ * The signalling of a channel. sip registers the line with the SIP account
+ * layer. xmpp binds it to an XMPP account (proto/xmpp/account.h), which
+ * carries Jingle calls; the sip_* options of the channel are then unread.
+ */
+enum cfg_account_type {
+	CFG_ACCOUNT_SIP = 0,
+	CFG_ACCOUNT_XMPP,
+};
+
+#define CFG_XMPP_SPEED_DIAL_MAX	10
+
 enum cfg_dtmf_mode {
 	CFG_DTMF_INBAND = 0,
 	CFG_DTMF_RFC2833,
@@ -394,6 +406,22 @@ struct cfg_channel {
 	struct cfg_sip_timers timers;
 	unsigned int g722_ptype;
 	unsigned int opus_ptype;
+
+	enum cfg_account_type account_type;
+	char xmpp_jid[CFG_STR_MAX];
+	char xmpp_password[CFG_STR_MAX];
+	char xmpp_resource[CFG_STR_MAX];
+	char xmpp_host[CFG_STR_MAX];
+	unsigned int xmpp_port;
+	bool xmpp_direct_tls;
+	bool xmpp_tls_verify;
+	bool xmpp_allow_plain;
+	char xmpp_tls_ca[CFG_STR_MAX];
+	char xmpp_stun[CFG_STR_MAX];
+	char xmpp_turn[CFG_STR_MAX];
+	char xmpp_turn_user[CFG_STR_MAX];
+	char xmpp_turn_password[CFG_STR_MAX];
+	char xmpp_speed_dial[CFG_XMPP_SPEED_DIAL_MAX][CFG_STR_MAX];
 };
 
 /*

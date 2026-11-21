@@ -26,6 +26,9 @@
 #include "proto/sip/line.h"
 #include "proto/sip/tap.h"
 #include "proto/sip/transport.h"
+#ifdef UVOICE_XMPP
+#include "proto/xmpp/account.h"
+#endif
 
 /* the signaling port a channel with no config listens and sends on */
 #define SIP_WIRE_PORT_DEFAULT	5060
@@ -56,12 +59,18 @@ static void sip_init(const struct proto_host *host, const struct cfg *cfg)
 	calls_reload(cfg);
 	calls_hal_ready_bind(sip_hal_ready);
 	calls_line_admit_bind(sip_line_admit);
+#ifdef UVOICE_XMPP
+	xmpp_accounts_init(host, sip_line_call_cb());
+#endif
 }
 
 static void sip_start(const struct cfg *cfg)
 {
 	accounts_init();
 	accounts_start(cfg);
+#ifdef UVOICE_XMPP
+	xmpp_accounts_start(cfg);
+#endif
 }
 
 /*
@@ -76,6 +85,9 @@ static void sip_dsp_ready(uint32_t features, uint32_t codecs)
 	calls_hal_features_set(features);
 	accounts_hal_features_set(features);
 	calls_hal_codecs_set(codecs);
+#ifdef UVOICE_XMPP
+	xmpp_accounts_hal_set(features, codecs);
+#endif
 	sdp_t38_max_datagram_set(cap->t38_max_datagram);
 	sip_lines_dsp_ready();
 }
@@ -83,6 +95,9 @@ static void sip_dsp_ready(uint32_t features, uint32_t codecs)
 static void sip_reload(const struct cfg *old_cfg, const struct cfg *new_cfg)
 {
 	accounts_reload(old_cfg, new_cfg);
+#ifdef UVOICE_XMPP
+	xmpp_accounts_reload(old_cfg, new_cfg);
+#endif
 	calls_reload(new_cfg);
 	sip_desk_reload(new_cfg);
 }
@@ -91,12 +106,18 @@ static void sip_shutdown_begin(void)
 {
 	sip_lines_stop_begin();
 	accounts_shutdown_begin();
+#ifdef UVOICE_XMPP
+	xmpp_accounts_shutdown_begin();
+#endif
 }
 
 /* The legs ended at lines_done(), so the leg layer has nothing left to end. */
 static void sip_done(void)
 {
 	accounts_done();
+#ifdef UVOICE_XMPP
+	xmpp_accounts_done();
+#endif
 	calls_done();
 }
 
@@ -653,6 +674,29 @@ static int desk_ubus_accounts(struct ubus_context *ctx,
 	return 0;
 }
 
+#ifdef UVOICE_XMPP
+/**
+ * desk_ubus_roster() - the roster verb, the contacts of every XMPP account
+ * @ctx: the ubus context
+ * @obj: the voice object
+ * @req: the request
+ * @method: unused
+ * @msg: unused
+ *
+ * Return: 0.
+ */
+static int desk_ubus_roster(struct ubus_context *ctx, struct ubus_object *obj,
+			    struct ubus_request_data *req, const char *method,
+			    struct blob_attr *msg)
+{
+	blob_buf_init(&desk_reply, 0);
+	xmpp_roster_dump(&desk_reply);
+	ubus_send_reply(ctx, req, desk_reply.head);
+
+	return 0;
+}
+#endif
+
 static const struct ubus_method sip_desk_rows[] = {
 	UBUS_METHOD("register", sip_ubus_register, sip_line_policy),
 	UBUS_METHOD("unregister", sip_ubus_unregister, sip_line_policy),
@@ -671,6 +715,9 @@ static const struct ubus_method sip_desk_rows[] = {
 	UBUS_METHOD("missed", desk_ubus_missed, desk_policy),
 	UBUS_METHOD_NOARG("calls", desk_ubus_calls),
 	UBUS_METHOD_NOARG("accounts", desk_ubus_accounts),
+#ifdef UVOICE_XMPP
+	UBUS_METHOD_NOARG("roster", desk_ubus_roster),
+#endif
 	UBUS_METHOD_NOARG("audio_get", desk_ubus_audio_get),
 	UBUS_METHOD("audio_set", desk_ubus_audio_set, audio_policy),
 	UBUS_METHOD("ring_preview", desk_ubus_ring_preview, audio_policy),
@@ -693,6 +740,19 @@ static void sip_status_dump_call(struct blob_buf *b, unsigned int line)
 {
 	sip_line_status_dump(b, line);
 	calls_status_dump(b, line);
+}
+
+/**
+ * sip_status_dump_lines() - the lines table and the xmpp table of the status
+ * @b: the blob buffer
+ * @want_line: one line, or -1 for every one
+ */
+static void sip_status_dump_lines(struct blob_buf *b, int want_line)
+{
+	accounts_status_dump(b, want_line);
+#ifdef UVOICE_XMPP
+	xmpp_accounts_status_dump(b, want_line);
+#endif
 }
 
 static void sip_status_dump_media(struct blob_buf *b)
@@ -774,7 +834,7 @@ const struct proto_ops sip_proto_ops = {
 	.line_fax_kind = sip_line_fax_kind,
 	.ubus_methods = sip_ubus_methods,
 	.status_dump_call = sip_status_dump_call,
-	.status_dump_lines = accounts_status_dump,
+	.status_dump_lines = sip_status_dump_lines,
 	.status_dump_media = sip_status_dump_media,
 	.wire_ports = sip_wire_ports,
 	.tap_set = sip_tap_set,

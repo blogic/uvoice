@@ -40,13 +40,16 @@
  * takes no inbound TLS connection until the certificate bundle arrives.
  * sip_tls_server_ready() reports which mode the load produced.
  *
- * No hostname verification. The peer certificate is never checked against the
- * name uvoice dialled, not with X509_check_host() and not through
- * SSL_set1_host(). This deviates from RFC 5922 section 7.3 on purpose: a
- * carrier whose certificate carries a name the SRV chain does not produce
- * would stop registering. cfg tls_server_verification_enabled
- * turns on chain verification alone (SSL_VERIFY_PEER plus the configured
- * ca.crt); the name stays unchecked in both modes.
+ * No hostname verification on the SIP path. sip_tls_conn_start() never checks
+ * the peer certificate against the name uvoice dialled, not with
+ * X509_check_host() and not through SSL_set1_host(). This deviates from
+ * RFC 5922 section 7.3 on purpose: a carrier whose certificate carries a name
+ * the SRV chain does not produce would stop registering. cfg
+ * tls_server_verification_enabled turns on chain verification alone
+ * (SSL_VERIFY_PEER plus the configured ca.crt); the name stays unchecked in
+ * both modes. sip_tls_conn_connect() takes a host to check, which the XMPP
+ * stream sets to the domain of the JID (RFC 6120 section 13.7.2), and an
+ * ALPN protocol name for a direct TLS connection (XEP-0368).
  *
  * Server name indication. The client sends server_name only when the target
  * came from a DNS name, because RFC 6066 3 forbids a literal address in the
@@ -203,6 +206,31 @@ const char *sip_tls_error(const struct sip_tls *t);
  */
 bool sip_tls_conn_start(struct sip_tls *t, struct sip_tls_conn *c, int fd, bool server,
 			const char *sni);
+
+/*
+ * sni   the server_name, NULL for none ("Server name indication" above).
+ * host  the name the peer certificate must carry when the client context
+ *       verifies the chain, NULL leaves the name unchecked.
+ * alpn  one application protocol name for the ALPN extension, NULL sends
+ *       none.
+ */
+struct sip_tls_client_opts {
+	const char *sni;
+	const char *host;
+	const char *alpn;
+};
+
+/**
+ * sip_tls_conn_connect() - attach a client connection with the full options
+ * @t: the contexts
+ * @c: the connection
+ * @fd: the open non blocking socket
+ * @opts: the options
+ *
+ * Return: true when the connection can start its handshake.
+ */
+bool sip_tls_conn_connect(struct sip_tls *t, struct sip_tls_conn *c, int fd,
+			  const struct sip_tls_client_opts *opts);
 
 /*
  * Drive the handshake. SIP_TLS_OK means it finished and the connection carries

@@ -1146,6 +1146,12 @@ void desk_event_push(struct desk *d, enum desk_ev ev, unsigned int line,
 			focus_lost(d);
 		}
 		break;
+	case DESK_EV_CALL_ANSWERED_ELSEWHERE:
+		if (d->calls[i].state != DESK_CALL_IDLE) {
+			call_clear(d, i, DESK_END_ANSWERED_ELSEWHERE);
+			focus_lost(d);
+		}
+		break;
 	case DESK_EV_CALL_REINVITE_OK:
 	case DESK_EV_CALL_REINVITE_FAIL:
 		call_reinvite(d, i, ev == DESK_EV_CALL_REINVITE_OK);
@@ -1513,7 +1519,7 @@ const char *desk_end_reason_name(enum desk_end_reason reason)
 {
 	static const char *const names[] = {
 		"local", "remote_bye", "busy", "rejected", "unavailable",
-		"failed", "cancelled", "transferred",
+		"failed", "cancelled", "transferred", "answered_elsewhere",
 	};
 
 	return reason < sizeof(names) / sizeof(names[0]) ? names[reason] :

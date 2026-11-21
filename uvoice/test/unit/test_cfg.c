@@ -6776,9 +6776,151 @@ static void trace_ident_test(void)
 	warn_capture_end();
 }
 
+enum {
+	XMPP_DUMP_CHANNEL,
+	XMPP_DUMP_MAX,
+};
+
+enum {
+	XMPP_CH_TYPE,
+	XMPP_CH_JID,
+	XMPP_CH_PASSWORD,
+	XMPP_CH_TURN_PASSWORD,
+	XMPP_CH_SPEED_DIAL,
+	XMPP_CH_MAX,
+};
+
+static const struct blobmsg_policy xmpp_dump_policy[XMPP_DUMP_MAX] = {
+	[XMPP_DUMP_CHANNEL] = {
+		.name = "channel",
+		.type = BLOBMSG_TYPE_ARRAY,
+	},
+};
+
+static const struct blobmsg_policy xmpp_channel_policy[XMPP_CH_MAX] = {
+	[XMPP_CH_TYPE] = {
+		.name = "account_type",
+		.type = BLOBMSG_TYPE_STRING,
+	},
+	[XMPP_CH_JID] = { .name = "xmpp_jid", .type = BLOBMSG_TYPE_STRING },
+	[XMPP_CH_PASSWORD] = {
+		.name = "xmpp_password",
+		.type = BLOBMSG_TYPE_STRING,
+	},
+	[XMPP_CH_TURN_PASSWORD] = {
+		.name = "xmpp_turn_password",
+		.type = BLOBMSG_TYPE_STRING,
+	},
+	[XMPP_CH_SPEED_DIAL] = {
+		.name = "xmpp_speed_dial_3",
+		.type = BLOBMSG_TYPE_STRING,
+	},
+};
+
+/**
+ * xmpp_options_test() - the XMPP account rows of a channel
+ *
+ * The rows load into the channel, the enum word dumps as its word, the two
+ * secrets stay out of the dump.
+ */
+static void xmpp_options_test(void)
+{
+	struct blob_attr *dump_fields[XMPP_DUMP_MAX] = { 0 };
+	struct blob_attr *channel_fields[XMPP_CH_MAX] = { 0 };
+	struct blob_attr *channel_entry;
+	struct cfg_fixture fixture;
+	struct blob_buf buf = { 0 };
+	const struct cfg_channel *ch;
+
+	CASE("a channel without the rows is a sip account with the defaults");
+	FIXTURE_LOAD_OR_RETURN(fixture, channel_option_load(""));
+	ch = &fixture.cfg->channel[0];
+	CHECK_UINT(ch->account_type, CFG_ACCOUNT_SIP);
+	CHECK(!ch->xmpp_jid[0]);
+	CHECK(!ch->xmpp_resource[0]);
+	CHECK_UINT(ch->xmpp_port, 0);
+	CHECK(!ch->xmpp_direct_tls);
+	CHECK(ch->xmpp_tls_verify);
+	CHECK(ch->xmpp_allow_plain);
+	fixture_free(&fixture);
+
+	CASE("the xmpp rows load into the channel");
+	FIXTURE_LOAD_OR_RETURN(fixture, channel_option_load(
+		"\toption account_type 'xmpp'\n"
+		"\toption xmpp_jid 'phone@example.net'\n"
+		"\toption xmpp_password 'pencil'\n"
+		"\toption xmpp_resource 'desk'\n"
+		"\toption xmpp_host 'xmpp.example.net'\n"
+		"\toption xmpp_port '5223'\n"
+		"\toption xmpp_direct_tls '1'\n"
+		"\toption xmpp_tls_verify '0'\n"
+		"\toption xmpp_allow_plain '0'\n"
+		"\toption xmpp_stun 'stun.example.net:3478'\n"
+		"\toption xmpp_turn 'turn.example.net'\n"
+		"\toption xmpp_turn_user 'u'\n"
+		"\toption xmpp_turn_password 'p'\n"
+		"\toption xmpp_speed_dial_3 '42=alice@example.net'\n"));
+	ch = &fixture.cfg->channel[0];
+	CHECK_UINT(ch->account_type, CFG_ACCOUNT_XMPP);
+	CHECK_CSTR(ch->xmpp_jid, "phone@example.net");
+	CHECK_CSTR(ch->xmpp_password, "pencil");
+	CHECK_CSTR(ch->xmpp_resource, "desk");
+	CHECK_CSTR(ch->xmpp_host, "xmpp.example.net");
+	CHECK_UINT(ch->xmpp_port, 5223);
+	CHECK(ch->xmpp_direct_tls);
+	CHECK(!ch->xmpp_tls_verify);
+	CHECK(!ch->xmpp_allow_plain);
+	CHECK_CSTR(ch->xmpp_stun, "stun.example.net:3478");
+	CHECK_CSTR(ch->xmpp_turn, "turn.example.net");
+	CHECK_CSTR(ch->xmpp_turn_user, "u");
+	CHECK_CSTR(ch->xmpp_turn_password, "p");
+	CHECK_CSTR(ch->xmpp_speed_dial[3], "42=alice@example.net");
+	CHECK(!ch->xmpp_speed_dial[0][0]);
+
+	CASE("the dump carries the word and the jid, never the passwords");
+	blobmsg_buf_init(&buf);
+	CHECK(buf.head != NULL);
+	if (!buf.head) {
+		blob_buf_free(&buf);
+		fixture_free(&fixture);
+		return;
+	}
+	cfg_dump(fixture.cfg, &buf);
+	blobmsg_parse_attr(xmpp_dump_policy, XMPP_DUMP_MAX, dump_fields,
+			   buf.head);
+	channel_entry = dump_fields[XMPP_DUMP_CHANNEL];
+	if (channel_entry)
+		blobmsg_parse_attr(xmpp_channel_policy, XMPP_CH_MAX,
+				   channel_fields, blobmsg_data(channel_entry));
+	CHECK(channel_fields[XMPP_CH_TYPE] != NULL);
+	if (channel_fields[XMPP_CH_TYPE])
+		CHECK_CSTR(blobmsg_get_string(channel_fields[XMPP_CH_TYPE]),
+			   "xmpp");
+	CHECK(channel_fields[XMPP_CH_JID] != NULL);
+	if (channel_fields[XMPP_CH_JID])
+		CHECK_CSTR(blobmsg_get_string(channel_fields[XMPP_CH_JID]),
+			   "phone@example.net");
+	CHECK(channel_fields[XMPP_CH_SPEED_DIAL] != NULL);
+	CHECK(channel_fields[XMPP_CH_PASSWORD] == NULL);
+	CHECK(channel_fields[XMPP_CH_TURN_PASSWORD] == NULL);
+	blob_buf_free(&buf);
+	fixture_free(&fixture);
+
+	CASE("an unknown account type word falls back to sip with a warning");
+	warn_capture_begin();
+	FIXTURE_LOAD_OR_RETURN(fixture, channel_option_load(
+		"\toption account_type 'jabber'\n"));
+	CHECK_UINT(fixture.cfg->channel[0].account_type, CFG_ACCOUNT_SIP);
+	CHECK_UINT(warn_capture_count("account_type value 'jabber' is invalid"),
+		   1);
+	fixture_free(&fixture);
+	warn_capture_end();
+}
+
 int main(void)
 {
 	trace_ident_test();
+	xmpp_options_test();
 	hal_schema_test();
 	enum_index_schema_test();
 	debug_schema_test();

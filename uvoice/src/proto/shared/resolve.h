@@ -144,7 +144,8 @@
 #define SIP_DNS_SERVICE_DEFAULT	"_sip._udp"
 #define SIP_DNS_SERVICE_TCP	"_sip._tcp"
 #define SIP_DNS_SERVICE_TLS	"_sips._tcp"
-#define SIP_DNS_SERVICE_MAX	16
+/* "_xmpps-client._tcp" of XEP-0368 is the longest label a caller passes. */
+#define SIP_DNS_SERVICE_MAX	24
 
 #define SIP_DNS_RESOLV_PATH	"/etc/resolv.conf"
 

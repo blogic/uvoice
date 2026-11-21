@@ -464,6 +464,16 @@ static void cases_alert(void)
 	CHECK(did("ringstop"));
 	CHECK(desk_state_get(&d) == DESK_IDLE);
 
+	CASE("ALERT x answered elsewhere: idle, ringer stops, not missed");
+	reset();
+	incoming(0, 0);
+	log_reset();
+	ev(DESK_EV_CALL_ANSWERED_ELSEWHERE, 0, 0, 0);
+	CHECK(did("ringstop"));
+	CHECK(desk_state_get(&d) == DESK_IDLE);
+	CHECK(!strcmp(desk_end_reason_name(DESK_END_ANSWERED_ELSEWHERE),
+		      "answered_elsewhere"));
+
 	CASE("ALERT x ubus reject: 486, idle");
 	reset();
 	incoming(0, 0);

@@ -48,6 +48,7 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 
 #include "str.h"
 #include "proto/shared/tls.h"
@@ -495,13 +496,19 @@ const char *sip_tls_error(const struct sip_tls *t)
 	return t ? t->err : "";
 }
 
-bool sip_tls_conn_start(struct sip_tls *t, struct sip_tls_conn *c, int fd, bool server,
-			const char *sni)
+/**
+ * conn_make() - build the SSL object of a connection on its socket
+ * @t: the contexts
+ * @c: the connection, cleared here
+ * @fd: the open non blocking socket
+ * @server: whether the connection accepts
+ *
+ * Return: true when the object exists and holds the socket.
+ */
+static bool conn_make(struct sip_tls *t, struct sip_tls_conn *c, int fd,
+		      bool server)
 {
 	SSL_CTX *ctx;
-
-	if (!t || !c)
-		return false;
 
 	memset(c, 0, sizeof(*c));
 	c->t = t;
@@ -527,12 +534,57 @@ bool sip_tls_conn_start(struct sip_tls *t, struct sip_tls_conn *c, int fd, bool 
 	if (!SSL_set_fd(c->ssl, fd))
 		return conn_drop(c, "socket");
 
-	if (server) {
+	if (server)
 		SSL_set_accept_state(c->ssl);
-		return true;
-	}
+	else
+		SSL_set_connect_state(c->ssl);
 
-	SSL_set_connect_state(c->ssl);
+	return true;
+}
+
+/**
+ * alpn_set() - offer one application protocol
+ * @c: the connection
+ * @name: the protocol name
+ *
+ * Return: true when the extension took the name.
+ */
+static bool alpn_set(struct sip_tls_conn *c, const char *name)
+{
+	unsigned char wire[256];
+	size_t len = strlen(name);
+
+	if (!len || len > sizeof(wire) - 1)
+		return false;
+
+	wire[0] = (unsigned char)len;
+	memcpy(wire + 1, name, len);
+
+	return SSL_set_alpn_protos(c->ssl, wire, (unsigned int)(len + 1)) == 0;
+}
+
+bool sip_tls_conn_start(struct sip_tls *t, struct sip_tls_conn *c, int fd, bool server,
+			const char *sni)
+{
+	struct sip_tls_client_opts opts = { .sni = sni };
+
+	if (!t || !c)
+		return false;
+
+	if (server)
+		return conn_make(t, c, fd, true);
+
+	return sip_tls_conn_connect(t, c, fd, &opts);
+}
+
+bool sip_tls_conn_connect(struct sip_tls *t, struct sip_tls_conn *c, int fd,
+			  const struct sip_tls_client_opts *opts)
+{
+	if (!t || !c || !opts)
+		return false;
+
+	if (!conn_make(t, c, fd, false))
+		return false;
 
 	/*
 	 * RFC 6066 section 3 forbids a literal address in server_name, and the
@@ -540,8 +592,18 @@ bool sip_tls_conn_start(struct sip_tls *t, struct sip_tls_conn *c, int fd, bool 
 	 * reach the peer's default virtual host and take the wrong certificate,
 	 * so the connection is refused instead of opened without the name.
 	 */
-	if (sni && sni[0] && !SSL_set_tlsext_host_name(c->ssl, sni))
+	if (opts->sni && opts->sni[0] &&
+	    !SSL_set_tlsext_host_name(c->ssl, opts->sni))
 		return conn_drop(c, "server_name");
+
+	if (opts->host && opts->host[0]) {
+		SSL_set_hostflags(c->ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+		if (!SSL_set1_host(c->ssl, opts->host))
+			return conn_drop(c, "host");
+	}
+
+	if (opts->alpn && opts->alpn[0] && !alpn_set(c, opts->alpn))
+		return conn_drop(c, "alpn");
 
 	return true;
 }

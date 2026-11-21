@@ -464,6 +464,8 @@ void acct_cfg_derive(const struct cfg *base, const struct cfg_channel *ch,
 
 	memset(out, 0, sizeof(*out));
 	out->line = ch->id;
+	if (ch->account_type != CFG_ACCOUNT_SIP)
+		return;
 	out->transport = acct_transport_derive(base, ch, out->line);
 
 	/* The SIP port fallback chain (cfg.h). */
@@ -4104,7 +4106,8 @@ void accounts_start(const struct cfg *cfg)
 
 			acct_cfg_derive(cfg, ch, &c);
 			if (!c.enabled) {
-				if (ch->enabled)
+				if (ch->enabled &&
+				    ch->account_type == CFG_ACCOUNT_SIP)
 					ULOG_WARN("line %u enabled but not registrable "
 						  "(missing proxy or user)\n", i);
 				continue;

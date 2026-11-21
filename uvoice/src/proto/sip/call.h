@@ -411,6 +411,13 @@ struct call_cb {
 	 */
 	void (*digit_net)(unsigned int line, unsigned int slot, char digit,
 			  uint16_t duration_ms);
+	/*
+	 * An offered call that another device of the same account took, so
+	 * the ring ends here and the call was not missed. Only a Jingle leg
+	 * (proto/xmpp/call.h) reports it: a SIP registration rings one
+	 * device. It may be NULL.
+	 */
+	void (*answered_elsewhere)(unsigned int line, unsigned int slot);
 };
 
 void calls_init(const struct call_media_ops *ops, const struct call_cb *cb);

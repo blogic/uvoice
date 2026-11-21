@@ -285,6 +285,47 @@ if(UVOICE_PROTO_MGCP)
 	list(APPEND UVOICE_PROTO_OBJECTS uvoice_sdp uvoice_proto_mgcp_text
 	     uvoice_proto_mgcp_txn uvoice_proto_mgcp_ep uvoice_proto_mgcp)
 endif()
+# The XMPP half of the SIP unit, src/proto/xmpp, in two object sets. It
+# exists only with UVOICE_XMPP, and it rides the SIP unit: the line shell of
+# proto/sip hosts the Jingle legs beside the SIP legs.
+#
+# uvoice_xmpp_core: the stream parser and writer over expat, the SASL client
+# over OpenSSL, service discovery, the JID helpers, the Jingle session, the
+# RTP description and JMI. Pure: no socket, no uloop, so a suite drives each
+# of them without a daemon.
+#
+# uvoice_xmpp: the c2s stream, the account and the Jingle legs. Only uvoiced
+# links it.
+if(UVOICE_XMPP AND NOT UVOICE_PROTO_SIP)
+	message(FATAL_ERROR "UVOICE_XMPP needs UVOICE_PROTO_SIP")
+endif()
+if(UVOICE_XMPP)
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(EXPAT REQUIRED IMPORTED_TARGET expat)
+
+	add_library(uvoice_xmpp_core OBJECT proto/xmpp/xml.c proto/xmpp/sasl.c
+		    proto/xmpp/jid.c proto/xmpp/disco.c proto/xmpp/jingle.c
+		    proto/xmpp/jmi.c proto/xmpp/call.c)
+	target_include_directories(uvoice_xmpp_core PUBLIC
+				   ${CMAKE_CURRENT_SOURCE_DIR}
+				   ${UBOX_INCLUDE_DIR})
+	target_link_libraries(uvoice_xmpp_core PUBLIC PkgConfig::EXPAT
+			      OpenSSL::Crypto ${UBOX_LIBRARY})
+
+	# The c2s stream owns a socket, a uloop timer, a TLS connection of
+	# proto/shared/tls.c and queries of the shared resolver. uvoiced links
+	# it beside uvoice_sip_stream, which carries tls.c.
+	add_library(uvoice_xmpp OBJECT proto/xmpp/stream.c
+		    proto/xmpp/account.c)
+	target_include_directories(uvoice_xmpp PUBLIC
+				   ${CMAKE_CURRENT_SOURCE_DIR}
+				   ${UBOX_INCLUDE_DIR})
+	target_link_libraries(uvoice_xmpp PRIVATE OpenSSL::SSL)
+
+	list(APPEND UVOICE_PROTO_OBJECTS uvoice_xmpp_core uvoice_xmpp)
+	list(APPEND UVOICE_PROTO_LIBRARIES PkgConfig::EXPAT)
+endif()
+
 # uvoice_sdp is on the list once when both units are on
 list(REMOVE_DUPLICATES UVOICE_PROTO_OBJECTS)
 
@@ -658,6 +699,54 @@ if(UVOICE_TESTS)
 				      uvoice_sip_txn ${UBOX_LIBRARY})
 		add_test(NAME test_fsm COMMAND test_fsm)
 
+		# The pure XMPP suites, one per module of uvoice_xmpp_core. Each
+		# links the object set and nothing else of the daemon.
+		if(UVOICE_XMPP)
+			foreach(suite test_xmpp_xml test_xmpp_sasl test_xmpp_jid
+				      test_xmpp_jingle)
+				add_executable(${suite}
+					       ${UVOICE_TEST_DIR}/unit/${suite}.c)
+				target_include_directories(${suite} PRIVATE
+							   ${UVOICE_TEST_DIR}/unit
+							   ${CMAKE_CURRENT_SOURCE_DIR})
+				target_link_libraries(${suite} uvoice_xmpp_core
+						      uvoice_sdp)
+				add_test(NAME ${suite} COMMAND ${suite})
+			endforeach()
+
+			# The leg suite drives the Jingle legs through a fake
+			# environment and the media ops of the host fake.
+			add_executable(test_xmpp_call
+				       ${UVOICE_TEST_DIR}/unit/test_xmpp_call.c
+				       ${UVOICE_TEST_DIR}/unit/proto_host_fake.c
+				       trace.c)
+			target_include_directories(test_xmpp_call PRIVATE
+						   ${UVOICE_TEST_DIR}/unit
+						   ${CMAKE_CURRENT_SOURCE_DIR})
+			target_link_libraries(test_xmpp_call uvoice_xmpp_core
+					      uvoice_sdp ${UBOX_LIBRARY})
+			add_test(NAME test_xmpp_call COMMAND test_xmpp_call)
+
+			# The c2s stream suite drives a real loopback connection
+			# against a scripted server. It compiles tls.c into itself
+			# instead of linking uvoice_sip_stream, so the SIP stream
+			# engine and its framer stay out of the binary.
+			add_executable(test_xmpp_stream
+				       ${UVOICE_TEST_DIR}/unit/test_xmpp_stream.c
+				       ${UVOICE_TEST_DIR}/unit/proto_host_fake.c
+				       proto/shared/tls.c trace.c)
+			target_include_directories(test_xmpp_stream PRIVATE
+						   ${UVOICE_TEST_DIR}/unit
+						   ${CMAKE_CURRENT_SOURCE_DIR})
+			target_compile_definitions(test_xmpp_stream PRIVATE
+				UVOICE_TLS_FIXTURE_DIR="${UVOICE_TEST_DIR}/unit/tls")
+			target_link_libraries(test_xmpp_stream uvoice_xmpp
+					      uvoice_xmpp_core uvoice_sdp
+					      ${UBOX_LIBRARY} OpenSSL::SSL
+					      OpenSSL::Crypto)
+			add_test(NAME test_xmpp_stream COMMAND test_xmpp_stream)
+		endif()
+
 		add_executable(test_desk ${UVOICE_TEST_DIR}/unit/test_desk.c
 			       proto/sip/desk.c dialplan.c)
 		target_include_directories(test_desk PRIVATE
@@ -692,6 +781,14 @@ if(UVOICE_TESTS)
 		target_link_libraries(test_line uvoice_sdp uvoice_sip
 				      uvoice_sip_txn uvoice_sip_udp
 				      ${UBOX_LIBRARY})
+		# The shell dispatches to the Jingle legs on an xmpp line, so
+		# the XMPP unit joins with the TLS wrapper its stream reads.
+		if(UVOICE_XMPP)
+			target_sources(test_line PRIVATE proto/shared/tls.c)
+			target_link_libraries(test_line uvoice_xmpp
+					      uvoice_xmpp_core OpenSSL::SSL
+					      OpenSSL::Crypto)
+		endif()
 		add_test(NAME test_line COMMAND test_line)
 	endif()
 

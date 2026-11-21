@@ -149,7 +149,7 @@ also holds two more suites, which run under `unshare -rm`:
 - two nftables snippets in `/usr/share/nftables.d`;
 - uci-defaults step `/etc/uci-defaults/90-uvoice`.
 
-A package build copies `src/` only, so it builds no tests. Four config
+A package build copies `src/` only, so it builds no tests. Five config
 options apply:
 
 - HAL backend choice: `UVOICE_HAL_STUB` (default, no hardware) or
@@ -164,6 +164,11 @@ options apply:
   gateway plug-in `udsp-fax-spandsp`. T.38 relay also needs `fax_t38_enable`
   on the channel and a plug-in that loads. Without it, fax uses G.711
   passthrough only.
+- `UVOICE_XMPP` (default off, needs `UVOICE_PROTO_SIP`): XMPP accounts with
+  Jingle calls, see the section below. It adds `libexpat` and
+  `libuvtransport` and needs an OpenSSL built with
+  `CONFIG_OPENSSL_WITH_DTLS`. The package passes it to cmake as
+  `UVOICE_XMPP`.
 
 In a buildroot, the libudsp package stages its headers and library, so the
 build needs no path variable.
@@ -227,6 +232,49 @@ uci commit voip
 ```
 
 Line 2 uses the same options in `channel2`.
+
+## XMPP accounts
+
+With `UVOICE_XMPP` a desk line can bind to an XMPP account instead of a SIP
+registration. The channel names it with `account_type xmpp`:
+
+```
+config channel 'channel1'
+	option enabled '1'
+	option account_type 'xmpp'
+	option xmpp_jid 'phone@example.net'
+	option xmpp_password 'secret'
+	option xmpp_speed_dial_0 '1=alice@example.net'
+```
+
+The stream resolves the SRV records of the domain, requires TLS (STARTTLS,
+or direct TLS with `xmpp_direct_tls`), verifies the server certificate
+against the domain (`xmpp_tls_verify`, the trust store of `xmpp_tls_ca` or
+the system one) and authenticates with SCRAM-SHA-256, SCRAM-SHA-1 or PLAIN.
+`xmpp_host` and `xmpp_port` name the server by hand. `xmpp_resource` picks
+the resource, `uvoice` by default.
+
+A call is a Jingle session (XEP-0166, XEP-0167) over ICE-UDP (XEP-0176) and
+DTLS-SRTP (XEP-0320). The codec list is the one the channel offers over
+SIP. Every call starts with Jingle Message Initiation (XEP-0353): an
+outbound call rings every device of the callee, an inbound call rings
+every device of the account, and the device that answers first takes the
+call. The other devices stop with the reason `answered_elsewhere`.
+
+A dialled string with an `@` is a JID. Digits map through
+`xmpp_speed_dial_0` to `xmpp_speed_dial_9`, each `digits=jid`. The ubus
+verb `roster` lists the contacts of the account for a user interface.
+
+The media transport takes its STUN and TURN servers from the server
+(XEP-0215) and from `xmpp_stun`, `xmpp_turn`, `xmpp_turn_user` and
+`xmpp_turn_password`, each `host[:port]`. A call whose connectivity checks
+fail while no TURN relay is known reports a line fault, so the operator
+learns that a relay is missing. The status verb carries an `xmpp` table
+per line with the stream state, the relays and the Jingle legs.
+
+The host build takes `-DUVOICE_XMPP=ON` and needs `expat`, `libjuice`,
+`libuvsrtp` and the `uvtransport` library of this repository with their
+pkg-config files on `PKG_CONFIG_PATH`.
 
 ## ubus API schema
 
