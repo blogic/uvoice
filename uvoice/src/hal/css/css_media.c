@@ -25,11 +25,19 @@
 #include <unistd.h>
 
 #include <uvsrtp/uvsrtp.h>
+#ifdef UVOICE_XMPP
+#include <uvtransport/uvtransport.h>
+#endif
 
 #include "css_int.h"
 
 #include "../../posix.h"
+#include "../../str.h"
 #include "../../trace.h"
+
+/* Every codec this backend carries uses an 8 kHz RTP timestamp clock, G.722 by
+ * the RFC 3551 convention. */
+#define CSS_RTP_CLOCK_HZ	8000u
 
 static struct css_stream *css_stream_get(struct hal *h, unsigned int line,
 					 unsigned int stream)
@@ -172,6 +180,11 @@ static enum hal_status css_media_validate(struct hal *h,
 		      "carries", m->srtp.suite);
 		return HAL_UNSUPPORTED;
 	}
+	if (m->transport.kind == HAL_TRANSPORT_ICE_DTLS &&
+	    m->srtp.suite != HAL_SRTP_NONE) {
+		TRACE(TRACE_HAL, "css: an ice-dtls stream takes no SDES suite");
+		return HAL_UNSUPPORTED;
+	}
 	if (css_codec_map(m->codec) < 0) {
 		TRACE(TRACE_HAL, "css: codec %u is not one this backend carries",
 		      m->codec);
@@ -228,6 +241,11 @@ static void css_stream_halt(struct hal *h, struct css_stream *s)
 		pthread_mutex_unlock(&h->pkt_lock);
 		css_pkt_sync(h);
 	}
+#ifdef UVOICE_XMPP
+	uvt_destroy(s->uvt);
+	s->uvt = NULL;
+	s->remote_known = false;
+#endif
 	if (s->dev_fd >= 0) {
 		h->dev->xioctl(h->dev->ctx, s->dev_fd, DVF99_VOICE_STOP, NULL);
 		h->dev->xclose(h->dev->ctx, s->dev_fd);
@@ -267,6 +285,356 @@ static enum hal_status css_sockets_take(struct hal *h, struct css_stream *s,
 	return HAL_OK;
 }
 
+#ifdef UVOICE_XMPP
+/**
+ * css_be32_read() - one big-endian 32-bit word of an RTP header
+ * @word: its first byte
+ *
+ * Return: the word in host order.
+ */
+static uint32_t css_be32_read(const uint8_t *word)
+{
+	return (uint32_t)word[0] << 24 | (uint32_t)word[1] << 16 |
+	       (uint32_t)word[2] << 8 | word[3];
+}
+
+/**
+ * css_uvt_rtp() - one plain RTP packet of the far end, into the device
+ * @user: the stream
+ * @buf: the packet
+ * @len: its length
+ *
+ * Context: the libjuice thread.
+ */
+static void css_uvt_rtp(void *user, const uint8_t *buf, size_t len)
+{
+	struct css_stream *stream = user;
+	struct hal *hal = stream->hal;
+	uint8_t record[sizeof(struct dvf99_voice_pkt) + DVF99_VOICE_PKT_MAX];
+	struct dvf99_voice_pkt *pkt = (void *)record;
+	struct timespec now;
+	uint64_t arrival_us;
+
+	if (!len || len > DVF99_VOICE_PKT_MAX || stream->dev_fd < 0)
+		return;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	arrival_us = (uint64_t)now.tv_sec * 1000000u +
+		     (uint64_t)now.tv_nsec / 1000u;
+	if (len >= 12) {
+		uint32_t rtp_ts = css_be32_read(buf + 4);
+		uint32_t ssrc = css_be32_read(buf + 8);
+
+		if (stream->jit_have && ssrc != stream->jit_ssrc)
+			stream->jit_have = false;
+		stream->jit_ssrc = ssrc;
+		css_rtp_jitter_update(stream, rtp_ts,
+				      (uint32_t)(arrival_us * CSS_RTP_CLOCK_HZ /
+						 1000000u));
+	}
+
+	memcpy(pkt->data, buf, len);
+	pkt->type = DVF99_VOICE_PKT_RTP;
+	pkt->ttl = 64;
+	pkt->time_ms = (uint32_t)(arrival_us / 1000u);
+	hal->dev->xwrite(hal->dev->ctx, stream->dev_fd, record,
+			 sizeof(*pkt) + len);
+}
+
+/**
+ * css_uvt_rtcp() - one plain RTCP packet of the far end, into the device
+ * @user: the stream
+ * @buf: the packet
+ * @len: its length
+ *
+ * Context: the libjuice thread.
+ */
+static void css_uvt_rtcp(void *user, const uint8_t *buf, size_t len)
+{
+	struct css_stream *stream = user;
+	struct hal *hal = stream->hal;
+	uint8_t record[sizeof(struct dvf99_voice_pkt) + DVF99_VOICE_PKT_MAX];
+	struct dvf99_voice_pkt *pkt = (void *)record;
+
+	if (!len || len > DVF99_VOICE_PKT_MAX || stream->dev_fd < 0)
+		return;
+
+	memcpy(pkt->data, buf, len);
+	pkt->type = DVF99_VOICE_PKT_RTCP;
+	pkt->ttl = 64;
+	pkt->time_ms = (uint32_t)(uvoice_mono_ms());
+	hal->dev->xwrite(hal->dev->ctx, stream->dev_fd, record,
+			 sizeof(*pkt) + len);
+}
+
+/**
+ * css_uvt_event() - one transport move, as a HAL_EVENT_TRANSPORT record
+ * @user: the stream
+ * @event: the enum uvt_event
+ * @arg: its argument, the ICE state on UVT_EV_ICE_STATE
+ *
+ * Context: the libjuice thread.
+ */
+static void css_uvt_event(void *user, enum uvt_event event, int arg)
+{
+	struct css_stream *stream = user;
+	struct hal_event ev = { .type = HAL_EVENT_TRANSPORT };
+
+	ev.line = (uint16_t)stream->line;
+	ev.stream = (uint16_t)stream->stream;
+	switch (event) {
+	case UVT_EV_CANDIDATE:
+		ev.u.transport.what = HAL_TRANSPORT_EV_CANDIDATE;
+		break;
+	case UVT_EV_GATHERING_DONE:
+		ev.u.transport.what = HAL_TRANSPORT_EV_GATHERING_DONE;
+		break;
+	case UVT_EV_ICE_STATE:
+		ev.u.transport.what = HAL_TRANSPORT_EV_ICE_STATE;
+		ev.u.transport.state = (uint8_t)arg;
+		break;
+	case UVT_EV_DTLS_UP:
+		ev.u.transport.what = HAL_TRANSPORT_EV_DTLS_UP;
+		break;
+	case UVT_EV_DTLS_FAIL:
+		ev.u.transport.what = HAL_TRANSPORT_EV_DTLS_FAIL;
+		break;
+	case UVT_EV_DTLS_CLOSED:
+		ev.u.transport.what = HAL_TRANSPORT_EV_DTLS_CLOSED;
+		break;
+	}
+	css_event_emit(stream->hal, &ev);
+}
+
+/**
+ * css_uvt_setup_of() - the libuvtransport setup of a HAL setup word
+ * @setup: the enum hal_dtls_setup
+ *
+ * Return: the enum uvt_setup.
+ */
+static enum uvt_setup css_uvt_setup_of(uint8_t setup)
+{
+	switch (setup) {
+	case HAL_DTLS_ACTIVE:
+		return UVT_SETUP_ACTIVE;
+	case HAL_DTLS_PASSIVE:
+		return UVT_SETUP_PASSIVE;
+	default:
+		return UVT_SETUP_ACTPASS;
+	}
+}
+
+/**
+ * css_uvt_cfg_fill() - the transport configuration of a description
+ * @stream: the stream
+ * @media: the description
+ * @cfg: receives the configuration
+ */
+static void css_uvt_cfg_fill(struct css_stream *stream,
+			     const struct hal_media *media, struct uvt_cfg *cfg)
+{
+	const struct hal_transport *transport = &media->transport;
+	char addr[INET6_ADDRSTRLEN];
+	unsigned int i;
+
+	memset(cfg, 0, sizeof(*cfg));
+	cfg->role = transport->ice_role == HAL_ICE_CONTROLLING ?
+		    UVT_ROLE_CONTROLLING : UVT_ROLE_CONTROLLED;
+	cfg->setup = css_uvt_setup_of(transport->dtls_setup);
+	str_copy(cfg->stun_host, sizeof(cfg->stun_host), transport->stun_host);
+	cfg->stun_port = transport->stun_port;
+	for (i = 0; i < transport->turns && i < UVT_TURN_MAX; i++) {
+		str_copy(cfg->turn[i].host, sizeof(cfg->turn[i].host),
+			 transport->turn[i].host);
+		str_copy(cfg->turn[i].user, sizeof(cfg->turn[i].user),
+			 transport->turn[i].user);
+		str_copy(cfg->turn[i].pass, sizeof(cfg->turn[i].pass),
+			 transport->turn[i].pass);
+		cfg->turn[i].port = transport->turn[i].port;
+	}
+	cfg->turns = i;
+	cfg->port_min = transport->port_min;
+	cfg->port_max = transport->port_max;
+	if (inet_ntop(addr_family(&media->local), media->local.addr, addr,
+		      sizeof(addr)) &&
+	    strcmp(addr, "0.0.0.0") && strcmp(addr, "::"))
+		str_copy(cfg->bind_address, sizeof(cfg->bind_address), addr);
+	cfg->on_rtp = css_uvt_rtp;
+	cfg->on_rtcp = css_uvt_rtcp;
+	cfg->on_event = css_uvt_event;
+	cfg->user = stream;
+}
+
+/**
+ * css_uvt_remote_take() - hand the far end of a description to the transport
+ * @stream: the stream
+ * @media: the description
+ *
+ * Return: HAL_OK, or HAL_FATAL when the transport refused the credentials.
+ */
+static enum hal_status css_uvt_remote_take(struct css_stream *stream,
+					   const struct hal_media *media)
+{
+	const struct hal_transport *transport = &media->transport;
+	enum uvt_setup ours = css_uvt_setup_of(transport->dtls_setup);
+	enum uvt_setup remote;
+
+	if (stream->remote_known || !transport->remote_ufrag[0] ||
+	    transport->remote_fp_hash != HAL_FP_SHA256)
+		return HAL_OK;
+
+	remote = UVT_SETUP_ACTIVE;
+	if (ours == UVT_SETUP_ACTIVE)
+		remote = UVT_SETUP_PASSIVE;
+	if (uvt_remote_set(stream->uvt, transport->remote_ufrag,
+			   transport->remote_pwd, transport->remote_fp,
+			   remote)) {
+		TRACE(TRACE_HAL, "css: the transport refused the remote ICE "
+		      "credentials");
+		return HAL_FATAL;
+	}
+	stream->remote_known = true;
+
+	return HAL_OK;
+}
+
+/**
+ * css_ice_config_set() - program a HAL_TRANSPORT_ICE_DTLS description
+ * @hal: the backend
+ * @stream: the stream
+ * @line: the line
+ * @index: the stream index
+ * @media: the description
+ *
+ * The first description of a stream makes its transport, which gathers at
+ * once. A later one hands over the far end when the first did not name it.
+ *
+ * Return: HAL_OK, or the refusal.
+ */
+static enum hal_status css_ice_config_set(struct hal *hal,
+					  struct css_stream *stream,
+					  unsigned int line, unsigned int index,
+					  const struct hal_media *media)
+{
+	struct dvf99_voice_config cfg;
+	struct uvt_cfg transport;
+	enum hal_status st;
+
+	if (!(hal->cap.features & HAL_FEAT_ICE_DTLS))
+		return HAL_UNSUPPORTED;
+
+	if (stream->sock.rtp_fd >= 0)
+		css_stream_halt(hal, stream);
+
+	if (stream->dev_fd < 0) {
+		stream->dev_fd = hal->dev->open(hal->dev->ctx,
+						css_dev_line(line, index));
+		if (stream->dev_fd < 0) {
+			TRACE(TRACE_HAL, "css: open %s: %s", css_voice_dev_path,
+			      strerror(errno));
+			return HAL_FATAL;
+		}
+	}
+
+	if (!stream->uvt) {
+		css_uvt_cfg_fill(stream, media, &transport);
+		stream->uvt = uvt_create(&transport);
+		if (!stream->uvt) {
+			TRACE(TRACE_HAL, "css: the ICE transport could not be "
+			      "made");
+			css_stream_halt(hal, stream);
+			return HAL_FATAL;
+		}
+	}
+
+	st = css_uvt_remote_take(stream, media);
+	if (st != HAL_OK) {
+		css_stream_halt(hal, stream);
+		return st;
+	}
+
+	cfg = stream->cfg;
+	css_cfg_build(line, index, media, &cfg, !stream->configured);
+	if (stream->running &&
+	    hal->dev->xioctl(hal->dev->ctx, stream->dev_fd, DVF99_VOICE_UPDATE,
+			     &cfg)) {
+		TRACE(TRACE_HAL, "css: DVF99_VOICE_UPDATE: %s",
+		      strerror(errno));
+		return HAL_FATAL;
+	}
+
+	TRACE(TRACE_HAL, "css: line %u stream %u ice-dtls config: css line %u "
+	      "pt %u remote %s running %d", line, index, cfg.line, cfg.tx_pt,
+	      stream->remote_known ? "known" : "pending", stream->running);
+	stream->cfg = cfg;
+	stream->configured = true;
+
+	return HAL_OK;
+}
+
+enum hal_status css_stream_candidate_add(struct hal *h, unsigned int line,
+					 unsigned int stream, const char *sdp)
+{
+	struct css_stream *record = css_stream_get(h, line, stream);
+
+	if (!record || !sdp)
+		return HAL_FATAL;
+	if (!record->uvt)
+		return HAL_UNSUPPORTED;
+
+	return uvt_candidate_add(record->uvt, sdp) ? HAL_FATAL : HAL_OK;
+}
+
+enum hal_status css_stream_candidate_next(struct hal *h, unsigned int line,
+					  unsigned int stream, char *out,
+					  size_t len)
+{
+	struct css_stream *record = css_stream_get(h, line, stream);
+
+	if (!record || !out || !len)
+		return HAL_FATAL;
+	if (!record->uvt)
+		return HAL_UNSUPPORTED;
+
+	return uvt_candidate_next(record->uvt, out, len) == 1 ? HAL_OK :
+								HAL_TRANSIENT;
+}
+
+enum hal_status css_stream_ice_local_get(struct hal *h, unsigned int line,
+					 unsigned int stream,
+					 struct hal_ice_local *out)
+{
+	struct css_stream *record = css_stream_get(h, line, stream);
+
+	if (!record || !out)
+		return HAL_FATAL;
+	if (!record->uvt)
+		return HAL_UNSUPPORTED;
+
+	memset(out, 0, sizeof(*out));
+	if (uvt_local_get(record->uvt, out->ufrag, out->pwd) ||
+	    uvt_fingerprint_get(out->fp))
+		return HAL_FATAL;
+	out->fp_hash = HAL_FP_SHA256;
+
+	return HAL_OK;
+}
+
+enum hal_status css_transport_fingerprint_get(struct hal *h,
+					      struct hal_fingerprint *out)
+{
+	if (!out)
+		return HAL_FATAL;
+	if (!(h->cap.features & HAL_FEAT_ICE_DTLS))
+		return HAL_UNSUPPORTED;
+	if (uvt_fingerprint_get(out->fp))
+		return HAL_FATAL;
+	out->hash = HAL_FP_SHA256;
+
+	return HAL_OK;
+}
+#endif
+
 enum hal_status css_stream_config_set(struct hal *h, unsigned int line,
 				      unsigned int stream,
 				      const struct hal_media *media)
@@ -283,6 +651,13 @@ enum hal_status css_stream_config_set(struct hal *h, unsigned int line,
 	st = css_media_validate(h, media);
 	if (st != HAL_OK)
 		return st;
+
+#ifdef UVOICE_XMPP
+	if (media->transport.kind == HAL_TRANSPORT_ICE_DTLS)
+		return css_ice_config_set(h, s, line, stream, media);
+	if (s->uvt)
+		css_stream_halt(h, s);
+#endif
 
 	st = css_sockets_take(h, s, media, &fresh);
 	if (st != HAL_OK)
@@ -426,10 +801,6 @@ enum hal_status css_stream_dtmf_send(struct hal *h, unsigned int line,
 
 	return HAL_OK;
 }
-
-/* Every codec this backend carries uses an 8 kHz RTP timestamp clock, G.722 by
- * the RFC 3551 convention. */
-#define CSS_RTP_CLOCK_HZ	8000u
 
 /*
  * The CSS reports 0xffffffff for a value it has not measured. The schema never
@@ -726,6 +1097,15 @@ static void css_pkt_from_device(struct hal *h, struct css_stream *s,
 		return;
 
 	rtcp = pkt->type == DVF99_VOICE_PKT_RTCP;
+#ifdef UVOICE_XMPP
+	if (s->uvt) {
+		if (rtcp)
+			uvt_send_rtcp(s->uvt, pkt->data, plen);
+		else
+			uvt_send_rtp(s->uvt, pkt->data, plen);
+		return;
+	}
+#endif
 	sock = rtcp ? s->sock.rtcp_fd : s->sock.rtp_fd;
 	if (sock < 0)
 		return;
@@ -798,6 +1178,29 @@ static void css_pkt_from_socket(struct hal *h, struct css_stream *s, int sock,
 
 #define CSS_PKT_FDS	(1 + CSS_LINES * CSS_STREAMS_PER_CHAN * 3)
 
+#ifdef UVOICE_XMPP
+/**
+ * css_pkt_transports_tick() - run the DTLS timers of every ICE stream
+ * @h: the backend
+ *
+ * Context: the packet thread, once per poll cycle.
+ */
+static void css_pkt_transports_tick(struct hal *h)
+{
+	unsigned int line, stream;
+
+	pthread_mutex_lock(&h->pkt_lock);
+	for (line = 0; line < CSS_LINES; line++)
+		for (stream = 0; stream < CSS_STREAMS_PER_CHAN; stream++) {
+			struct css_stream *s = &h->stream[line][stream];
+
+			if (s->running && s->uvt)
+				uvt_tick(s->uvt);
+		}
+	pthread_mutex_unlock(&h->pkt_lock);
+}
+#endif
+
 static void *css_pkt_thread(void *arg)
 {
 	struct hal *h = arg;
@@ -844,9 +1247,16 @@ static void *css_pkt_thread(void *arg)
 		pthread_cond_broadcast(&h->pkt_cond);
 		pthread_mutex_unlock(&h->pkt_lock);
 
-		if (poll(pfd, (nfds_t)n, 100) <= 0)
+		if (poll(pfd, (nfds_t)n, 100) <= 0) {
+#ifdef UVOICE_XMPP
+			css_pkt_transports_tick(h);
+#endif
 			continue;
+		}
 
+#ifdef UVOICE_XMPP
+		css_pkt_transports_tick(h);
+#endif
 		if (pfd[0].revents & POLLIN) {
 			char drain[64];
 

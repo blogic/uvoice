@@ -22,6 +22,9 @@
 #include <unistd.h>
 
 #include <libubox/utils.h>
+#ifdef UVOICE_XMPP
+#include <uvtransport/uvtransport.h>
+#endif
 
 #include "css_int.h"
 
@@ -161,6 +164,21 @@ static struct hal *css_open(int event_fd)
 	h->cap.features = HAL_FEAT_DESK | HAL_FEAT_CONF | HAL_FEAT_SRTP |
 			  HAL_FEAT_WIDEBAND | HAL_FEAT_G729 | HAL_FEAT_G726 |
 			  HAL_FEAT_IPV6_MEDIA | HAL_FEAT_RTCP_ADDR;
+#ifdef UVOICE_XMPP
+	if (uvt_init())
+		ULOG_ERR("css: the ICE and DTLS transport did not initialise; "
+			 "ICE_DTLS streams are refused\n");
+	else
+		h->cap.features |= HAL_FEAT_ICE_DTLS;
+	for (line = 0; line < CSS_LINES; line++)
+		for (stream = 0; stream < CSS_STREAMS_PER_CHAN; stream++) {
+			struct css_stream *s = &h->stream[line][stream];
+
+			s->hal = h;
+			s->line = line;
+			s->stream = stream;
+		}
+#endif
 	h->cap.codecs = (1u << HAL_CODEC_PCMU) | (1u << HAL_CODEC_PCMA) |
 			(1u << HAL_CODEC_G722) | (1u << HAL_CODEC_G729) |
 			(1u << HAL_CODEC_G726_32);
@@ -385,4 +403,10 @@ const struct hal_ops hal_backend_ops = {
 	.stream_stats_start = css_stream_stats_start,
 	.stream_stats_result_get = css_stream_stats_result_get,
 	.conf_set = css_conf_set,
+#ifdef UVOICE_XMPP
+	.stream_candidate_add = css_stream_candidate_add,
+	.stream_candidate_next = css_stream_candidate_next,
+	.stream_ice_local_get = css_stream_ice_local_get,
+	.transport_fingerprint_get = css_transport_fingerprint_get,
+#endif
 };

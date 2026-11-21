@@ -1282,6 +1282,20 @@ static void routing_tests(void)
 	CHECK_UINT(line_last.type, HAL_EVENT_RTP_FIRST_RX);
 	CHECK_UINT(line_last.stream, 1);
 
+	CASE("a transport record reaches the line shell with its payload");
+	env_reset();
+	trace_capture_begin();
+	ev = ev_make(HAL_EVENT_TRANSPORT, 1, 1);
+	ev.u.transport.what = HAL_TRANSPORT_EV_DTLS_UP;
+	event_dispatch(&ev);
+	CHECK_UINT(line_events, 1);
+	CHECK_UINT(line_last.type, HAL_EVENT_TRANSPORT);
+	CHECK_UINT(line_last.line, 1);
+	CHECK_UINT(line_last.stream, 1);
+	CHECK_UINT(line_last.u.transport.what, HAL_TRANSPORT_EV_DTLS_UP);
+	CHECK_UINT(trace_default_count(HAL_EVENT_TRANSPORT), 0);
+	trace_capture_end();
+
 	CASE("dispatch routing: the record travels to the line shell unchanged");
 	env_reset();
 	ev = ev_make(HAL_EVENT_DIGIT, 1, 2);

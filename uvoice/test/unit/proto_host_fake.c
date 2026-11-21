@@ -352,6 +352,90 @@ static bool phf_media_rand_bytes(void *priv, void *buf, size_t len)
 	return phf_bytes_fill(buf, len);
 }
 
+/**
+ * phf_media_candidate_add() - record one remote candidate
+ * @priv: the recorder
+ * @line: the line
+ * @stream: the stream
+ * @sdp: the a=candidate line, kept in phf.candidate
+ *
+ * Return: phf.status.
+ */
+static enum hal_status phf_media_candidate_add(void *priv, unsigned int line,
+					       unsigned int stream,
+					       const char *sdp)
+{
+	phf_hop_add(PHF_MEDIA_CANDIDATE_ADD, line)->stream = stream;
+	phf.n[PHF_MEDIA_CANDIDATE_ADD]++;
+	phf_line(line);
+	phf.stream = stream;
+	snprintf(phf.candidate, sizeof(phf.candidate), "%s", sdp ? sdp : "");
+
+	return phf.status;
+}
+
+/**
+ * phf_media_candidate_next() - pop the next scripted local candidate
+ * @priv: the recorder
+ * @line: the line
+ * @stream: the stream
+ * @out: receives the line
+ * @len: capacity of @out
+ *
+ * Return: HAL_OK with a line, HAL_TRANSIENT past the script.
+ */
+static enum hal_status phf_media_candidate_next(void *priv, unsigned int line,
+						unsigned int stream, char *out,
+						size_t len)
+{
+	phf.n[PHF_MEDIA_CANDIDATE_NEXT]++;
+	phf_line(line);
+	phf.stream = stream;
+	if (phf.cand_next >= phf.cand_n)
+		return HAL_TRANSIENT;
+
+	snprintf(out, len, "%s", phf.cand_script[phf.cand_next++]);
+
+	return HAL_OK;
+}
+
+/**
+ * phf_media_ice_local_get() - answer the scripted local ICE identity
+ * @priv: the recorder
+ * @line: the line
+ * @stream: the stream
+ * @out: receives phf.ice_local
+ *
+ * Return: phf.status.
+ */
+static enum hal_status phf_media_ice_local_get(void *priv, unsigned int line,
+					       unsigned int stream,
+					       struct hal_ice_local *out)
+{
+	phf.n[PHF_MEDIA_ICE_LOCAL_GET]++;
+	phf_line(line);
+	phf.stream = stream;
+	*out = phf.ice_local;
+
+	return phf.status;
+}
+
+/**
+ * phf_media_fingerprint_get() - answer the scripted DTLS fingerprint
+ * @priv: the recorder
+ * @out: receives phf.fingerprint
+ *
+ * Return: phf.status.
+ */
+static enum hal_status phf_media_fingerprint_get(void *priv,
+						 struct hal_fingerprint *out)
+{
+	phf.n[PHF_MEDIA_FINGERPRINT_GET]++;
+	*out = phf.fingerprint;
+
+	return phf.status;
+}
+
 static enum hal_status phf_stream_stats_get(void *ctx, unsigned int line,
 					    unsigned int stream,
 					    struct hal_media_stats *out)
@@ -947,6 +1031,10 @@ static const struct proto_host phf_host = {
 		.fax_apply = phf_media_fax_apply,
 		.lec_latch_clear = phf_media_lec_latch_clear,
 		.rand_bytes = phf_media_rand_bytes,
+		.candidate_add = phf_media_candidate_add,
+		.candidate_next = phf_media_candidate_next,
+		.ice_local_get = phf_media_ice_local_get,
+		.fingerprint_get = phf_media_fingerprint_get,
 		.priv = &phf,
 	},
 	.stream_stats_get = phf_stream_stats_get,

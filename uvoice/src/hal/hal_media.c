@@ -182,9 +182,43 @@ enum hal_status hal_media_sock_connect(struct hal_media_sock *s,
 	return HAL_OK;
 }
 
+/**
+ * ice_addrs_validate() - rule 4 for a description of kind ICE_DTLS
+ * @media: the description, which names a local family and no ports
+ * @features: the enum hal_feature bits of the backend
+ *
+ * Return: HAL_OK, or HAL_UNSUPPORTED for a kind or family the backend lacks.
+ */
+static enum hal_status ice_addrs_validate(const struct hal_media *media,
+					  uint32_t features)
+{
+	if (!(features & HAL_FEAT_ICE_DTLS)) {
+		TRACE(TRACE_HAL, "media transport ice-dtls on a backend that "
+		      "does not carry HAL_FEAT_ICE_DTLS");
+		return HAL_UNSUPPORTED;
+	}
+
+	if (!ipver_known(media->local.ipver)) {
+		TRACE(TRACE_HAL, "media local ipver %u names no family",
+		      media->local.ipver);
+		return HAL_UNSUPPORTED;
+	}
+
+	if (media->local.ipver == 6 && !(features & HAL_FEAT_IPV6_MEDIA)) {
+		TRACE(TRACE_HAL, "media ipver 6 on a backend that does not "
+		      "carry HAL_FEAT_IPV6_MEDIA");
+		return HAL_UNSUPPORTED;
+	}
+
+	return HAL_OK;
+}
+
 enum hal_status hal_media_validate_addrs(const struct hal_media *m,
 					 uint32_t features)
 {
+	if (m->transport.kind == HAL_TRANSPORT_ICE_DTLS)
+		return ice_addrs_validate(m, features);
+
 	/*
 	 * One socket has one family: a version the record does not define, two
 	 * ends in different families, or a separate RTCP address in a third, is

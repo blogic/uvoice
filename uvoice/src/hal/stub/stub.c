@@ -48,6 +48,9 @@
  * timeout is the outer backstop either way. */
 #define STUB_COMPLETION_TRIES	5
 #define STUB_COMPLETION_WAIT_MS	40
+#define STUB_CANDIDATE_RING	4
+#define STUB_ICE_PWD		"stubstubstubstubstubstub"
+#define STUB_FP_BYTE		0x5a
 
 struct stub_stream {
 	bool configured;
@@ -61,6 +64,13 @@ struct stub_stream {
 	struct hal_media media;
 	struct hal_fax_profile fax;
 	struct hal_media_stats stats;
+#ifdef UVOICE_XMPP
+	char cand[STUB_CANDIDATE_RING][HAL_CANDIDATE_MAX];
+	unsigned int cand_head;
+	unsigned int cand_count;
+	unsigned int remote_candidates;
+	char remote_last[HAL_CANDIDATE_MAX];
+#endif
 };
 
 struct stub_line {
@@ -274,6 +284,9 @@ static struct hal *stub_open(int event_fd)
 			  HAL_FEAT_SRTP | HAL_FEAT_IPV6_MEDIA |
 			  HAL_FEAT_RTCP_ADDR | HAL_FEAT_LOOP |
 			  HAL_FEAT_SLIC_DUMP;
+#ifdef UVOICE_XMPP
+	h->cap.features |= HAL_FEAT_ICE_DTLS;
+#endif
 	/*
 	 * The G.726-32 and T.38 codec bits travel with their feature bits.
 	 * This backend accepts both configs. It must describe a consistent DSP.
@@ -767,6 +780,12 @@ static enum hal_status stub_stream_stop(struct hal *h, unsigned int line,
 	 * with the stream, so the suite goes back to NONE and the dump of a
 	 * stopped stream carries no digest. */
 	memset(&s->media.srtp, 0, sizeof(s->media.srtp));
+#ifdef UVOICE_XMPP
+	s->cand_head = 0;
+	s->cand_count = 0;
+	s->remote_candidates = 0;
+	s->remote_last[0] = 0;
+#endif
 	/* hal.h stream_stop: a stopped stream must be described again before it
 	 * can start again. The rest of the description stays, so the dump of a
 	 * stopped stream still says what the call ran. */
@@ -1581,6 +1600,232 @@ static enum hal_status stub_region_get(struct hal *h, struct hal_region *out)
 	return HAL_OK;
 }
 
+#ifdef UVOICE_XMPP
+/**
+ * stub_fingerprint_fill() - the one fingerprint this backend ever reports
+ * @fingerprint: receives HAL_FP_MAX bytes
+ */
+static void stub_fingerprint_fill(uint8_t *fingerprint)
+{
+	memset(fingerprint, STUB_FP_BYTE, HAL_FP_MAX);
+}
+
+/**
+ * stub_ice_stream_get() - the stream of an ICE_DTLS description
+ * @hal: the backend
+ * @line: the line
+ * @stream: the stream index
+ * @ice: whether the stream holds an ICE_DTLS description
+ *
+ * Return: the stream, or NULL for one outside the capability.
+ */
+static struct stub_stream *stub_ice_stream_get(struct hal *hal,
+					       unsigned int line,
+					       unsigned int stream, bool *ice)
+{
+	struct stub_stream *record = stream_get(hal, line, stream);
+
+	*ice = record &&
+	       record->media.transport.kind == HAL_TRANSPORT_ICE_DTLS;
+
+	return record;
+}
+
+/**
+ * stub_stream_candidate_add() - record one remote candidate
+ * @hal: the backend
+ * @line: the line
+ * @stream: the stream index
+ * @sdp: the a=candidate line
+ *
+ * Return: HAL_OK, HAL_UNSUPPORTED for a UDP stream, HAL_FATAL otherwise.
+ */
+static enum hal_status stub_stream_candidate_add(struct hal *hal,
+						 unsigned int line,
+						 unsigned int stream,
+						 const char *sdp)
+{
+	struct stub_stream *record;
+	bool ice;
+
+	record = stub_ice_stream_get(hal, line, stream, &ice);
+	if (!record || !sdp)
+		return HAL_FATAL;
+	if (!ice)
+		return HAL_UNSUPPORTED;
+
+	record->remote_candidates++;
+	str_copy(record->remote_last, sizeof(record->remote_last), sdp);
+	TRACE(TRACE_HAL, "stub: line %u strm %u remote candidate %u: %s", line,
+	      stream, record->remote_candidates, sdp);
+
+	return HAL_OK;
+}
+
+/**
+ * stub_stream_candidate_next() - pop one scripted local candidate
+ * @hal: the backend
+ * @line: the line
+ * @stream: the stream index
+ * @out: receives the a=candidate line
+ * @len: capacity of @out
+ *
+ * Return: HAL_OK with a line, HAL_TRANSIENT on an empty ring,
+ * HAL_UNSUPPORTED for a UDP stream, HAL_FATAL otherwise.
+ */
+static enum hal_status stub_stream_candidate_next(struct hal *hal,
+						  unsigned int line,
+						  unsigned int stream,
+						  char *out, size_t len)
+{
+	struct stub_stream *record;
+	bool ice;
+
+	record = stub_ice_stream_get(hal, line, stream, &ice);
+	if (!record || !out || !len)
+		return HAL_FATAL;
+	if (!ice)
+		return HAL_UNSUPPORTED;
+	if (!record->cand_count)
+		return HAL_TRANSIENT;
+
+	str_copy(out, len, record->cand[record->cand_head]);
+	record->cand_head = (record->cand_head + 1) % STUB_CANDIDATE_RING;
+	record->cand_count--;
+
+	return HAL_OK;
+}
+
+/**
+ * stub_stream_ice_local_get() - the canned local ICE identity of a stream
+ * @hal: the backend
+ * @line: the line
+ * @stream: the stream index
+ * @out: receives the identity
+ *
+ * Return: HAL_OK, HAL_UNSUPPORTED for a UDP stream, HAL_FATAL otherwise.
+ */
+static enum hal_status stub_stream_ice_local_get(struct hal *hal,
+						 unsigned int line,
+						 unsigned int stream,
+						 struct hal_ice_local *out)
+{
+	struct stub_stream *record;
+	bool ice;
+
+	record = stub_ice_stream_get(hal, line, stream, &ice);
+	if (!record || !out)
+		return HAL_FATAL;
+	if (!ice)
+		return HAL_UNSUPPORTED;
+
+	memset(out, 0, sizeof(*out));
+	snprintf(out->ufrag, sizeof(out->ufrag), "stub%u%u", line, stream);
+	str_copy(out->pwd, sizeof(out->pwd), STUB_ICE_PWD);
+	out->fp_hash = HAL_FP_SHA256;
+	stub_fingerprint_fill(out->fp);
+
+	return HAL_OK;
+}
+
+/**
+ * stub_transport_fingerprint_get() - the canned fingerprint of the backend
+ * @hal: the backend
+ * @out: receives the fingerprint
+ *
+ * Return: HAL_OK, or HAL_FATAL without a record to fill.
+ */
+static enum hal_status
+stub_transport_fingerprint_get(struct hal *hal, struct hal_fingerprint *out)
+{
+	if (!out)
+		return HAL_FATAL;
+
+	out->hash = HAL_FP_SHA256;
+	stub_fingerprint_fill(out->fp);
+
+	return HAL_OK;
+}
+
+/**
+ * stub_transport_event_push() - emit one HAL_EVENT_TRANSPORT record
+ * @hal: the backend
+ * @line: the line
+ * @stream: the stream index
+ * @what: the enum hal_transport_ev
+ * @state: the enum hal_ice_state of an ICE_STATE record, else 0
+ */
+static void stub_transport_event_push(struct hal *hal, unsigned int line,
+				      unsigned int stream, uint8_t what,
+				      uint8_t state)
+{
+	struct hal_event ev = { .type = HAL_EVENT_TRANSPORT };
+
+	ev.line = (uint16_t)line;
+	ev.stream = (uint16_t)stream;
+	ev.u.transport.what = what;
+	ev.u.transport.state = state;
+	event_push(hal, &ev);
+}
+
+/**
+ * stub_transport_candidate() - script one local candidate of a stream
+ * @line: the line
+ * @stream: the stream index
+ * @sdp: the a=candidate line the core pops with stream_candidate_next
+ *
+ * Return: true when the ring took it and the CANDIDATE record went out.
+ */
+bool stub_transport_candidate(unsigned int line, unsigned int stream,
+			      const char *sdp)
+{
+	struct stub_stream *record = NULL;
+	unsigned int slot;
+	bool ice = false;
+
+	if (stub_dev)
+		record = stub_ice_stream_get(stub_dev, line, stream, &ice);
+	if (!record || !ice || !sdp)
+		return false;
+	if (record->cand_count >= STUB_CANDIDATE_RING)
+		return false;
+
+	slot = (record->cand_head + record->cand_count) % STUB_CANDIDATE_RING;
+	str_copy(record->cand[slot], sizeof(record->cand[slot]), sdp);
+	record->cand_count++;
+	stub_transport_event_push(stub_dev, line, stream,
+				  HAL_TRANSPORT_EV_CANDIDATE, 0);
+
+	return true;
+}
+
+/**
+ * stub_transport_event() - script one transport move of a stream
+ * @line: the line
+ * @stream: the stream index
+ * @what: the enum hal_transport_ev
+ * @state: the enum hal_ice_state of an ICE_STATE record, else 0
+ *
+ * Return: true when the record went out.
+ */
+bool stub_transport_event(unsigned int line, unsigned int stream,
+			  unsigned int what, unsigned int state)
+{
+	struct stub_stream *record = NULL;
+	bool ice = false;
+
+	if (stub_dev)
+		record = stub_ice_stream_get(stub_dev, line, stream, &ice);
+	if (!record || !ice || what > HAL_TRANSPORT_EV_DTLS_CLOSED)
+		return false;
+
+	stub_transport_event_push(stub_dev, line, stream, (uint8_t)what,
+				  (uint8_t)state);
+
+	return true;
+}
+#endif
+
 const struct hal_ops hal_backend_ops = {
 	.name = "stub",
 	.open = stub_open,
@@ -1622,6 +1867,12 @@ const struct hal_ops hal_backend_ops = {
 	.region_apply = stub_region_apply,
 	.line_dump_start = stub_line_dump_start,
 	.line_dump_result_get = stub_line_dump_result_get,
+#ifdef UVOICE_XMPP
+	.stream_candidate_add = stub_stream_candidate_add,
+	.stream_candidate_next = stub_stream_candidate_next,
+	.stream_ice_local_get = stub_stream_ice_local_get,
+	.transport_fingerprint_get = stub_transport_fingerprint_get,
+#endif
 };
 
 enum {
@@ -2303,6 +2554,17 @@ static void stream_dump(const struct stub_line *l, unsigned int streams)
 		blobmsg_add_u32(&b, "payload_type", s->media.codec_pt);
 		blobmsg_add_u32(&b, "ptime", s->media.ptime_ms);
 		blobmsg_add_u32(&b, "direction", s->media.direction);
+#ifdef UVOICE_XMPP
+		blobmsg_add_string(&b, "transport",
+				   s->media.transport.kind ==
+				   HAL_TRANSPORT_ICE_DTLS ? "ice-dtls" : "udp");
+		if (s->media.transport.kind == HAL_TRANSPORT_ICE_DTLS) {
+			blobmsg_add_u32(&b, "remote_candidates",
+					s->remote_candidates);
+			blobmsg_add_u8(&b, "remote_known",
+				       s->media.transport.remote_ufrag[0] != 0);
+		}
+#endif
 		/* The hold silence beside the direction it accompanies (hal.h):
 		 * the two together are what says whether the far end hears this
 		 * room, and neither one says it alone. */
@@ -2564,6 +2826,73 @@ static int stub_ubus_rtp_rx(struct ubus_context *ctx, struct ubus_object *obj,
 	return 0;
 }
 
+#ifdef UVOICE_XMPP
+enum {
+	STUB_TRANSPORT_LINE,
+	STUB_TRANSPORT_STREAM,
+	STUB_TRANSPORT_CANDIDATE,
+	STUB_TRANSPORT_WHAT,
+	STUB_TRANSPORT_STATE,
+	__STUB_TRANSPORT_MAX,
+};
+
+static const struct blobmsg_policy stub_transport_policy[] = {
+	[STUB_TRANSPORT_LINE] = { "line", BLOBMSG_TYPE_INT32 },
+	[STUB_TRANSPORT_STREAM] = { "stream", BLOBMSG_TYPE_INT32 },
+	[STUB_TRANSPORT_CANDIDATE] = { "candidate", BLOBMSG_TYPE_STRING },
+	[STUB_TRANSPORT_WHAT] = { "what", BLOBMSG_TYPE_INT32 },
+	[STUB_TRANSPORT_STATE] = { "state", BLOBMSG_TYPE_INT32 },
+};
+
+/**
+ * stub_ubus_transport() - the transport injector of an ICE_DTLS stream
+ * @ctx: the ubus context
+ * @obj: the voice.stub object
+ * @req: the request
+ * @method: the verb name
+ * @msg: the arguments: line, stream, then candidate or what with state
+ *
+ * A candidate scripts one local candidate with its CANDIDATE record. A what
+ * word emits that transport record with its state. A UDP stream refuses both.
+ *
+ * Return: 0, or a ubus status.
+ */
+static int stub_ubus_transport(struct ubus_context *ctx,
+			       struct ubus_object *obj,
+			       struct ubus_request_data *req,
+			       const char *method, struct blob_attr *msg)
+{
+	struct blob_attr *tb[__STUB_TRANSPORT_MAX] = {};
+	unsigned int line = 0, stream = 0;
+	bool ok;
+
+	if (msg)
+		blobmsg_parse(stub_transport_policy, __STUB_TRANSPORT_MAX, tb,
+			      blob_data(msg), blob_len(msg));
+
+	if (!stub_dev)
+		return UBUS_STATUS_NOT_FOUND;
+
+	if (tb[STUB_TRANSPORT_LINE])
+		line = blobmsg_get_u32(tb[STUB_TRANSPORT_LINE]);
+	if (tb[STUB_TRANSPORT_STREAM])
+		stream = blobmsg_get_u32(tb[STUB_TRANSPORT_STREAM]);
+
+	if (tb[STUB_TRANSPORT_CANDIDATE])
+		ok = stub_transport_candidate(line, stream,
+			blobmsg_get_string(tb[STUB_TRANSPORT_CANDIDATE]));
+	else if (tb[STUB_TRANSPORT_WHAT])
+		ok = stub_transport_event(line, stream,
+			blobmsg_get_u32(tb[STUB_TRANSPORT_WHAT]),
+			tb[STUB_TRANSPORT_STATE] ?
+			blobmsg_get_u32(tb[STUB_TRANSPORT_STATE]) : 0);
+	else
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	return ok ? 0 : UBUS_STATUS_INVALID_ARGUMENT;
+}
+#endif
+
 static const struct ubus_method stub_methods[] = {
 	UBUS_METHOD("hook", stub_ubus_hook, stub_hook_policy),
 	UBUS_METHOD("digit", stub_ubus_digit, stub_digit_policy),
@@ -2574,6 +2903,9 @@ static const struct ubus_method stub_methods[] = {
 	UBUS_METHOD("media_stats", stub_ubus_media_stats, stub_stats_policy),
 	UBUS_METHOD("stream", stub_ubus_stream, stub_stream_policy),
 	UBUS_METHOD("rtp_rx", stub_ubus_rtp_rx, stub_rtp_rx_policy),
+#ifdef UVOICE_XMPP
+	UBUS_METHOD("transport", stub_ubus_transport, stub_transport_policy),
+#endif
 	UBUS_METHOD_NOARG("dump", stub_ubus_dump),
 };
 

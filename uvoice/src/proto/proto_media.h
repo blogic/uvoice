@@ -152,6 +152,22 @@ struct call_media_ops {
 	 */
 	bool (*rand_bytes)(void *priv, void *buf, size_t len);
 	void *priv;
+	/*
+	 * Appended after priv, by the append rule of proto/proto.h. The four
+	 * transport ops of a HAL_TRANSPORT_ICE_DTLS stream (hal.h), each
+	 * wrapping the nullable backend op: HAL_UNSUPPORTED where the backend
+	 * carries none.
+	 */
+	enum hal_status (*candidate_add)(void *priv, unsigned int line,
+					 unsigned int stream, const char *sdp);
+	enum hal_status (*candidate_next)(void *priv, unsigned int line,
+					  unsigned int stream, char *out,
+					  size_t len);
+	enum hal_status (*ice_local_get)(void *priv, unsigned int line,
+					 unsigned int stream,
+					 struct hal_ice_local *out);
+	enum hal_status (*fingerprint_get)(void *priv,
+					   struct hal_fingerprint *out);
 };
 
 /*

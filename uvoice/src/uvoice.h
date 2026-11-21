@@ -307,6 +307,12 @@ void uvoice_ubus_request_reply(struct ubus_context *ctx,
 
 #ifdef UVOICE_HAL_STUB
 void stub_ubus_attach(struct ubus_context *ctx);
+#ifdef UVOICE_XMPP
+bool stub_transport_candidate(unsigned int line, unsigned int stream,
+			      const char *sdp);
+bool stub_transport_event(unsigned int line, unsigned int stream,
+			  unsigned int what, unsigned int state);
+#endif
 #endif
 
 #endif

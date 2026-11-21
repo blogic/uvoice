@@ -113,8 +113,15 @@ enum phf_entry {
 	PHF_CALLTRACE_TAP_ENDPOINT_SET,
 	PHF_SHUTDOWN_DONE,
 	PHF_RANDOM_BYTES,
+	PHF_MEDIA_CANDIDATE_ADD,
+	PHF_MEDIA_CANDIDATE_NEXT,
+	PHF_MEDIA_ICE_LOCAL_GET,
+	PHF_MEDIA_FINGERPRINT_GET,
 	PHF_COUNT,
 };
+
+/* The scripted local candidates of the fake transport, popped in order. */
+#define PHF_CANDIDATE_MAX	4
 
 /*
  * One call of an entry that acts on a line or a stream, in call order, with
@@ -237,6 +244,15 @@ struct phf_rec {
 	struct phf_peer admit[PHF_PEER_MAX];
 	unsigned int nadmit;
 	struct phf_peer hold[PHF_PEER_MAX];
+	/* the last remote candidate media.candidate_add took, the scripted
+	 * local candidates media.candidate_next pops, and the local identity
+	 * media.ice_local_get and media.fingerprint_get answer */
+	char candidate[HAL_CANDIDATE_MAX];
+	const char *cand_script[PHF_CANDIDATE_MAX];
+	unsigned int cand_n;
+	unsigned int cand_next;
+	struct hal_ice_local ice_local;
+	struct hal_fingerprint fingerprint;
 };
 
 extern struct phf_rec phf;

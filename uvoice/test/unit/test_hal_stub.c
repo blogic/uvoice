@@ -34,6 +34,7 @@
 
 #include "hal/hal.h"
 #include "trace.h"
+#include "uvoice.h"
 
 #include "test_util.h"
 #include "test_uloop.h"
@@ -1177,6 +1178,111 @@ static void test_ring_cap(void)
 	probe_close(&p);
 }
 
+#ifdef UVOICE_XMPP
+/**
+ * test_transport() - the transport ops of an ICE_DTLS stream (hal.h)
+ *
+ * A UDP stream refuses the three stream ops with HAL_UNSUPPORTED. An ICE_DTLS
+ * stream answers its identity, takes remote candidates, pops the scripted
+ * local ones in order and refuses an empty ring with HAL_TRANSIENT. The stop
+ * empties the ring.
+ */
+static void test_transport(void)
+{
+	static const char *const remote =
+		"a=candidate:1 1 UDP 2130706431 192.0.2.1 5000 typ host";
+	static const char *const host =
+		"a=candidate:1 1 UDP 2130706431 10.0.0.2 6000 typ host";
+	static const char *const srflx =
+		"a=candidate:2 1 UDP 1694498815 198.51.100.2 6000 typ srflx "
+		"raddr 10.0.0.2 rport 6000";
+	struct hal_fingerprint fingerprint;
+	struct hal_ice_local local;
+	struct hal_channel_cfg ccfg;
+	struct hal_media media;
+	char line[HAL_CANDIDATE_MAX];
+	struct probe probe;
+	struct hal *hal;
+
+	if (!probe_open(&probe)) {
+		CASE("the transport case needs an open backend");
+		CHECK(false);
+		return;
+	}
+	hal = probe.h;
+
+	CASE("the capability word carries HAL_FEAT_ICE_DTLS");
+	CHECK(hal_backend_ops.cap_get(hal)->features & HAL_FEAT_ICE_DTLS);
+
+	CASE("the backend fingerprint is SHA-256");
+	CHECK(hal_backend_ops.transport_fingerprint_get(hal, &fingerprint) ==
+	      HAL_OK);
+	CHECK_UINT(fingerprint.hash, HAL_FP_SHA256);
+
+	chan_build(&ccfg, true, true);
+	media_build(&media, HAL_CODEC_PCMU, HAL_PASSTHROUGH_OFF,
+		    HAL_JB_ADAPTIVE);
+	CHECK(hal_backend_ops.channel_config_set(hal, 0, &ccfg) == HAL_OK);
+	CHECK(hal_backend_ops.stream_config_set(hal, 0, 0, &media) == HAL_OK);
+
+	CASE("a udp stream carries no transport op");
+	CHECK(hal_backend_ops.stream_candidate_add(hal, 0, 0, remote) ==
+	      HAL_UNSUPPORTED);
+	CHECK(hal_backend_ops.stream_candidate_next(hal, 0, 0, line,
+						    sizeof(line)) ==
+	      HAL_UNSUPPORTED);
+	CHECK(hal_backend_ops.stream_ice_local_get(hal, 0, 0, &local) ==
+	      HAL_UNSUPPORTED);
+	CHECK(!stub_transport_candidate(0, 0, host));
+
+	CASE("an ice-dtls stream answers its identity");
+	media.transport.kind = HAL_TRANSPORT_ICE_DTLS;
+	media.remote.port = 0;
+	CHECK(hal_backend_ops.stream_config_set(hal, 0, 0, &media) == HAL_OK);
+	CHECK(hal_backend_ops.stream_ice_local_get(hal, 0, 0, &local) ==
+	      HAL_OK);
+	CHECK(strlen(local.ufrag) >= 4);
+	CHECK(strlen(local.pwd) >= 22);
+	CHECK_UINT(local.fp_hash, HAL_FP_SHA256);
+	CHECK(!memcmp(local.fp, fingerprint.fp, HAL_FP_MAX));
+
+	CASE("remote candidates are taken, local ones pop in order");
+	CHECK(hal_backend_ops.stream_candidate_add(hal, 0, 0, remote) ==
+	      HAL_OK);
+	CHECK(hal_backend_ops.stream_candidate_next(hal, 0, 0, line,
+						    sizeof(line)) ==
+	      HAL_TRANSIENT);
+	CHECK(stub_transport_candidate(0, 0, host));
+	CHECK(stub_transport_candidate(0, 0, srflx));
+	CHECK(ev_drain_has(&probe, HAL_EVENT_TRANSPORT));
+	CHECK(hal_backend_ops.stream_candidate_next(hal, 0, 0, line,
+						    sizeof(line)) == HAL_OK);
+	CHECK(!strcmp(line, host));
+	CHECK(hal_backend_ops.stream_candidate_next(hal, 0, 0, line,
+						    sizeof(line)) == HAL_OK);
+	CHECK(!strcmp(line, srflx));
+	CHECK(hal_backend_ops.stream_candidate_next(hal, 0, 0, line,
+						    sizeof(line)) ==
+	      HAL_TRANSIENT);
+
+	CASE("a scripted move goes out as a transport record");
+	CHECK(stub_transport_event(0, 0, HAL_TRANSPORT_EV_DTLS_UP, 0));
+	CHECK(stub_transport_event(0, 0, HAL_TRANSPORT_EV_DTLS_CLOSED, 0));
+	CHECK(!stub_transport_event(0, 0, HAL_TRANSPORT_EV_DTLS_CLOSED + 1, 0));
+	CHECK(!stub_transport_event(0, 0, 99, 0));
+	CHECK(ev_drain_has(&probe, HAL_EVENT_TRANSPORT));
+
+	CASE("the stop empties the ring");
+	CHECK(stub_transport_candidate(0, 0, host));
+	CHECK(hal_backend_ops.stream_stop(hal, 0, 0) == HAL_OK);
+	CHECK(hal_backend_ops.stream_candidate_next(hal, 0, 0, line,
+						    sizeof(line)) ==
+	      HAL_TRANSIENT);
+
+	probe_close(&probe);
+}
+#endif
+
 int main(void)
 {
 	uloop_init();
@@ -1195,6 +1301,9 @@ int main(void)
 	test_loop_exclusion();
 	test_slic_dump();
 	test_ring_cap();
+#ifdef UVOICE_XMPP
+	test_transport();
+#endif
 
 	uloop_done();
 

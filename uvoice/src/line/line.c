@@ -2216,6 +2216,88 @@ static bool media_rand_bytes(void *priv, void *buf, size_t len)
 	return uvoice_random_bytes(buf, len);
 }
 
+/**
+ * media_candidate_add() - one remote ICE candidate to the backend
+ * @priv: the backend handle
+ * @line: the line
+ * @stream: the stream
+ * @sdp: the a=candidate line
+ *
+ * Return: the backend answer, HAL_UNSUPPORTED without the op.
+ */
+static enum hal_status media_candidate_add(void *priv, unsigned int line,
+					   unsigned int stream, const char *sdp)
+{
+	struct hal *hal = priv;
+
+	if (!hal || !hal_backend_ops.stream_candidate_add)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.stream_candidate_add(hal, line, stream, sdp);
+}
+
+/**
+ * media_candidate_next() - pop one gathered local candidate of the backend
+ * @priv: the backend handle
+ * @line: the line
+ * @stream: the stream
+ * @out: receives the a=candidate line
+ * @len: capacity of @out
+ *
+ * Return: the backend answer, HAL_UNSUPPORTED without the op.
+ */
+static enum hal_status media_candidate_next(void *priv, unsigned int line,
+					    unsigned int stream,
+					    char *out, size_t len)
+{
+	struct hal *hal = priv;
+
+	if (!hal || !hal_backend_ops.stream_candidate_next)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.stream_candidate_next(hal, line, stream, out,
+						     len);
+}
+
+/**
+ * media_ice_local_get() - the local ICE identity of a stream
+ * @priv: the backend handle
+ * @line: the line
+ * @stream: the stream
+ * @out: receives the identity
+ *
+ * Return: the backend answer, HAL_UNSUPPORTED without the op.
+ */
+static enum hal_status media_ice_local_get(void *priv, unsigned int line,
+					   unsigned int stream,
+					   struct hal_ice_local *out)
+{
+	struct hal *hal = priv;
+
+	if (!hal || !hal_backend_ops.stream_ice_local_get)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.stream_ice_local_get(hal, line, stream, out);
+}
+
+/**
+ * media_fingerprint_get() - the DTLS fingerprint of the backend
+ * @priv: the backend handle
+ * @out: receives the fingerprint
+ *
+ * Return: the backend answer, HAL_UNSUPPORTED without the op.
+ */
+static enum hal_status media_fingerprint_get(void *priv,
+					     struct hal_fingerprint *out)
+{
+	struct hal *hal = priv;
+
+	if (!hal || !hal_backend_ops.transport_fingerprint_get)
+		return HAL_UNSUPPORTED;
+
+	return hal_backend_ops.transport_fingerprint_get(hal, out);
+}
+
 static const struct call_media_ops media_ops = {
 	.config_set = media_config_set,
 	.start = media_start,
@@ -2225,6 +2307,10 @@ static const struct call_media_ops media_ops = {
 	.fax_apply = media_fax_apply,
 	.lec_latch_clear = media_lec_latch_clear,
 	.rand_bytes = media_rand_bytes,
+	.candidate_add = media_candidate_add,
+	.candidate_next = media_candidate_next,
+	.ice_local_get = media_ice_local_get,
+	.fingerprint_get = media_fingerprint_get,
 };
 
 const struct call_media_ops *line_media_ops(void)
@@ -4866,6 +4952,24 @@ static void input_forward(struct line *l, const struct hal_event *ev)
 	line_event_forward(l, &fwd);
 }
 
+/**
+ * transport_forward() - an ICE or DTLS move of a stream, for the protocol
+ * @l: the line
+ * @ev: the HAL record
+ */
+static void transport_forward(struct line *l, const struct hal_event *ev)
+{
+	struct proto_line_event fwd = { .type = PROTO_EV_TRANSPORT };
+
+	TRACE(TRACE_HAL, "line %u stream %u transport event %u state %u",
+	      l->index, ev->stream, ev->u.transport.what, ev->u.transport.state);
+
+	fwd.stream = ev->stream;
+	fwd.u.transport.what = ev->u.transport.what;
+	fwd.u.transport.state = ev->u.transport.state;
+	line_event_forward(l, &fwd);
+}
+
 /* A tone the detector reported, the fax and modem tones above all, which
  * the protocol's media policy reads (PROTO_EV_TONE). */
 static void tone_forward(struct line *l, const struct hal_event *ev)
@@ -4977,6 +5081,9 @@ void line_hal_event(const struct hal_event *ev)
 		return;
 	case HAL_EVENT_INPUT:
 		input_forward(l, ev);
+		return;
+	case HAL_EVENT_TRANSPORT:
+		transport_forward(l, ev);
 		return;
 	default:
 		TRACE(TRACE_HOOK, "line %u event type %u ignored", l->index, ev->type);

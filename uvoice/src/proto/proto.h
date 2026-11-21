@@ -222,6 +222,7 @@ enum proto_line_ev {
 	PROTO_EV_RING_END,
 	PROTO_EV_LINE_STATE,
 	PROTO_EV_INPUT,
+	PROTO_EV_TRANSPORT,
 };
 
 struct proto_line_event {
@@ -251,6 +252,10 @@ struct proto_line_event {
 			uint8_t key;
 			uint8_t pressed;
 		} input;
+		struct {
+			uint8_t what;		/* enum hal_transport_ev */
+			uint8_t state;		/* enum hal_ice_state */
+		} transport;
 	} u;
 };
 

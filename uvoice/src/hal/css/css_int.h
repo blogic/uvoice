@@ -40,6 +40,8 @@
 
 #include "dvf99_voice.h"
 
+struct uvt_stream;
+
 /* One desk phone: two lines, two streams each (a call and its consult). */
 #define CSS_LINES		2
 #define CSS_STREAMS_PER_CHAN	2
@@ -90,6 +92,17 @@ struct css_stream {
 	int32_t jit_transit;
 	uint32_t jit_ssrc;
 	bool jit_have;
+#ifdef UVOICE_XMPP
+	/* The ICE and DTLS-SRTP transport of a HAL_TRANSPORT_ICE_DTLS stream
+	 * (libuvtransport), in place of the socket pair. Its callbacks run on
+	 * the libjuice thread and reach the device and the emitter through
+	 * these three fields. */
+	struct uvt_stream *uvt;
+	struct hal *hal;
+	unsigned int line;
+	unsigned int stream;
+	bool remote_known;
+#endif
 };
 
 /* The stream ops, defined in css_media.c and placed in hal_backend_ops by
@@ -114,6 +127,20 @@ enum hal_status css_stream_stats_result_get(struct hal *h, unsigned int line,
 					    struct hal_media_stats *out);
 enum hal_status css_conf_set(struct hal *h, unsigned int line,
 			     enum hal_conf_mode mode);
+
+#ifdef UVOICE_XMPP
+/* The transport ops of an ICE_DTLS stream (hal.h), in css_media.c. */
+enum hal_status css_stream_candidate_add(struct hal *h, unsigned int line,
+					 unsigned int stream, const char *sdp);
+enum hal_status css_stream_candidate_next(struct hal *h, unsigned int line,
+					  unsigned int stream, char *out,
+					  size_t len);
+enum hal_status css_stream_ice_local_get(struct hal *h, unsigned int line,
+					 unsigned int stream,
+					 struct hal_ice_local *out);
+enum hal_status css_transport_fingerprint_get(struct hal *h,
+					      struct hal_fingerprint *out);
+#endif
 
 /* The media packet thread (css_media.c), started after the relay in css_open
  * and stopped before the streams are released in css_close. */

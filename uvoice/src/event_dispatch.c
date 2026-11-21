@@ -422,6 +422,9 @@ void event_dispatch(const struct hal_event *ev)
 		 * reaches it instead of the default trace */
 		line_hal_event(ev);
 		return;
+	case HAL_EVENT_TRANSPORT:
+		line_hal_event(ev);
+		return;
 	case HAL_EVENT_JB_UPDATE:
 		event_jb_store(ev);
 		return;

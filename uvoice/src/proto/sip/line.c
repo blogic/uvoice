@@ -3571,6 +3571,7 @@ void sip_line_event(unsigned int line, const struct proto_line_event *ev)
 	case PROTO_EV_INPUT:
 		desk_key_take(l, ev);
 		return;
+	case PROTO_EV_TRANSPORT:
 	case PROTO_EV_RING_END:
 	case PROTO_EV_LINE_STATE:
 		return;

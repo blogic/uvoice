@@ -326,6 +326,15 @@ enum hal_feature {
 						 * keys. The core reads no
 						 * desk bit; the status reply
 						 * names it. */
+	HAL_FEAT_ICE_DTLS	= (1 << 21),	/* the backend carries a stream
+						 * of transport kind
+						 * HAL_TRANSPORT_ICE_DTLS: an
+						 * ICE agent with DTLS-SRTP on
+						 * sockets of its own, see
+						 * struct hal_transport and the
+						 * four transport ops. A clear
+						 * bit refuses the kind under
+						 * stream_config_set rule 4. */
 };
 
 enum hal_codec {
@@ -849,6 +858,124 @@ struct hal_rtcp_addr {
 	uint8_t addr[16];
 };
 
+/*
+ * How a stream reaches the far end (hal_media.transport.kind). UDP is the
+ * connected socket pair of stream_config_set rule 1. ICE_DTLS is an ICE agent
+ * with DTLS-SRTP (RFC 8445, RFC 5764) the backend runs on sockets of its own:
+ * the description names no remote address and no local port, local names the
+ * family alone, rtcp travels on the one component. The SDES srtp block stays
+ * HAL_SRTP_NONE because the handshake keys the stream. A backend without
+ * HAL_FEAT_ICE_DTLS refuses the kind with HAL_UNSUPPORTED (rule 4).
+ */
+enum hal_transport_kind {
+	HAL_TRANSPORT_UDP = 0,
+	HAL_TRANSPORT_ICE_DTLS,
+};
+
+enum hal_ice_role {
+	HAL_ICE_CONTROLLED = 0,
+	HAL_ICE_CONTROLLING,
+};
+
+/* The DTLS setup of this side (RFC 5763): ACTPASS leaves the choice to the
+ * far end's answer, ACTIVE is the DTLS client and PASSIVE the server. */
+enum hal_dtls_setup {
+	HAL_DTLS_ACTPASS = 0,
+	HAL_DTLS_ACTIVE,
+	HAL_DTLS_PASSIVE,
+};
+
+enum hal_fp_hash {
+	HAL_FP_NONE = 0,
+	HAL_FP_SHA256,
+};
+
+/* The ICE state a HAL_EVENT_TRANSPORT ICE_STATE record carries. */
+enum hal_ice_state {
+	HAL_ICE_DISCONNECTED = 0,
+	HAL_ICE_GATHERING,
+	HAL_ICE_CONNECTING,
+	HAL_ICE_CONNECTED,
+	HAL_ICE_COMPLETED,
+	HAL_ICE_FAILED,
+};
+
+/*
+ * What a HAL_EVENT_TRANSPORT record reports (u.transport.what). CANDIDATE: a
+ * local candidate waits in the backend, fetched with stream_candidate_next.
+ * GATHERING_DONE: no more local candidates follow. ICE_STATE: u.transport.state
+ * is the enum hal_ice_state. DTLS_UP: the handshake verified the far end and
+ * keyed the stream, so media flows. DTLS_FAIL: the handshake failed or the far
+ * end's fingerprint did not match, so the stream carries no media.
+ * DTLS_CLOSED: the far end ended the DTLS session in order, so no more media
+ * flows; it is no failure, the signalling ends the call.
+ */
+enum hal_transport_ev {
+	HAL_TRANSPORT_EV_CANDIDATE = 0,
+	HAL_TRANSPORT_EV_GATHERING_DONE,
+	HAL_TRANSPORT_EV_ICE_STATE,
+	HAL_TRANSPORT_EV_DTLS_UP,
+	HAL_TRANSPORT_EV_DTLS_FAIL,
+	HAL_TRANSPORT_EV_DTLS_CLOSED,
+};
+
+/* RFC 8445 section 5.3 bounds with the terminator. */
+#define HAL_ICE_UFRAG_MAX	257
+#define HAL_ICE_PWD_MAX		257
+#define HAL_TRANSPORT_HOST_MAX	64
+#define HAL_TRANSPORT_CRED_MAX	64
+#define HAL_TURN_MAX		2
+#define HAL_FP_MAX		32
+/* One a=candidate line with its terminator (stream_candidate_next). */
+#define HAL_CANDIDATE_MAX	256
+
+struct hal_turn {
+	char host[HAL_TRANSPORT_HOST_MAX];	/* an address, never a name */
+	char user[HAL_TRANSPORT_CRED_MAX];
+	char pass[HAL_TRANSPORT_CRED_MAX];
+	uint16_t port;
+};
+
+/*
+ * The ICE and DTLS half of a description (hal_media.transport). Remote
+ * candidates are not in it: stream_candidate_add carries them one by one, so
+ * a trickled candidate reaches a running stream without a reprogramming. An
+ * empty remote_ufrag says the far end is not known yet (the initiator before
+ * the answer): the backend gathers and waits for the re-application that
+ * names the far end. remote_fp_hash HAL_FP_NONE says the same of the
+ * fingerprint. No DTLS handshake starts before both are known.
+ */
+struct hal_transport {
+	uint8_t kind;			/* enum hal_transport_kind */
+	uint8_t ice_role;		/* enum hal_ice_role */
+	uint8_t dtls_setup;		/* enum hal_dtls_setup, this side */
+	uint8_t remote_fp_hash;		/* enum hal_fp_hash */
+	bool rtcp_mux;
+	char remote_ufrag[HAL_ICE_UFRAG_MAX];
+	char remote_pwd[HAL_ICE_PWD_MAX];
+	uint8_t remote_fp[HAL_FP_MAX];
+	char stun_host[HAL_TRANSPORT_HOST_MAX];	/* an address, never a name */
+	uint16_t stun_port;
+	struct hal_turn turn[HAL_TURN_MAX];
+	uint8_t turns;
+	uint16_t port_min;		/* the local port range, 0 = any */
+	uint16_t port_max;
+};
+
+/* The local ICE identity of one stream (stream_ice_local_get). */
+struct hal_ice_local {
+	char ufrag[HAL_ICE_UFRAG_MAX];
+	char pwd[HAL_ICE_PWD_MAX];
+	uint8_t fp_hash;		/* enum hal_fp_hash */
+	uint8_t fp[HAL_FP_MAX];
+};
+
+/* The DTLS certificate fingerprint of a backend (transport_fingerprint_get). */
+struct hal_fingerprint {
+	uint8_t hash;			/* enum hal_fp_hash */
+	uint8_t fp[HAL_FP_MAX];
+};
+
 struct hal_media {
 	struct hal_addr local;
 	/* A backend refuses a zero remote port, because a media socket it
@@ -1087,6 +1214,14 @@ struct hal_media {
 	 * it: the stub.
 	 */
 	uint16_t punch_interval_ms;
+	/*
+	 * Appended after punch_interval_ms, by the same rule, so a backend
+	 * built against the older record keeps its layout. The transport of
+	 * the stream (enum hal_transport_kind and the ICE and DTLS half). A
+	 * zeroed block is the connected UDP pair every description carried
+	 * before it.
+	 */
+	struct hal_transport transport;
 };
 
 /*
@@ -1633,6 +1768,8 @@ enum hal_event_type {
 	HAL_EVENT_LEC_POLICY,		/* the answer-tone disabler moved the
 					 * canceller policy of a line */
 	HAL_EVENT_INPUT,
+	HAL_EVENT_TRANSPORT,		/* an ICE or DTLS move of a stream, see
+					 * enum hal_transport_ev */
 };
 
 enum hal_key {
@@ -1843,6 +1980,11 @@ struct hal_event {
 			uint8_t key;
 			uint8_t pressed;
 		} input;
+		struct {
+			uint8_t what;		/* enum hal_transport_ev */
+			uint8_t state;		/* enum hal_ice_state on
+						 * ICE_STATE, else 0 */
+		} transport;
 	} u;
 };
 
@@ -2313,6 +2455,39 @@ struct hal_ops {
 	 */
 	enum hal_status (*audio_tune_set)(struct hal *h,
 					  const struct hal_audio_tune *tune);
+	/*
+	 * The four transport ops of a HAL_TRANSPORT_ICE_DTLS stream. All four
+	 * are FAST and nullable: NULL on a backend without HAL_FEAT_ICE_DTLS.
+	 *
+	 * fast: one remote candidate, an a=candidate line with or without the
+	 * a= prefix, before or after the start. HAL_UNSUPPORTED for a stream
+	 * whose description is not ICE_DTLS, HAL_FATAL for a line the agent
+	 * refused.
+	 */
+	enum hal_status (*stream_candidate_add)(struct hal *h,
+						unsigned int line,
+						unsigned int stream,
+						const char *sdp);
+	/*
+	 * fast: pop one gathered local candidate into out, HAL_CANDIDATE_MAX
+	 * bytes. HAL_OK with a line, HAL_TRANSIENT when none waits now,
+	 * HAL_UNSUPPORTED for a stream whose description is not ICE_DTLS. A
+	 * HAL_EVENT_TRANSPORT CANDIDATE record says one waits.
+	 */
+	enum hal_status (*stream_candidate_next)(struct hal *h,
+						 unsigned int line,
+						 unsigned int stream,
+						 char *out, size_t len);
+	/* fast: the local ICE credentials and the DTLS fingerprint of an
+	 * ICE_DTLS stream, valid from its stream_config_set. */
+	enum hal_status (*stream_ice_local_get)(struct hal *h,
+						unsigned int line,
+						unsigned int stream,
+						struct hal_ice_local *out);
+	/* fast: the DTLS certificate fingerprint of this backend, the same for
+	 * every stream, valid from open(). */
+	enum hal_status (*transport_fingerprint_get)(
+		struct hal *h, struct hal_fingerprint *out);
 };
 
 /*

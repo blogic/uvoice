@@ -19,6 +19,13 @@ option(UVOICE_TESTS "build the unit test suites and the fuzz targets" OFF)
 # call at all.
 option(UVOICE_PROTO_SIP "SIP signaling" ON)
 option(UVOICE_PROTO_MGCP "MGCP signaling" OFF)
+# XMPP accounts with Jingle calls over ICE and DTLS-SRTP, an opt-in of the SIP
+# unit. It gates the transport ops of the backends, the xmpp unit and their
+# suites, and pulls expat, libjuice and libuvtransport into the image.
+option(UVOICE_XMPP "XMPP and Jingle calls with ICE and DTLS-SRTP media" OFF)
+if(UVOICE_XMPP)
+	add_definitions(-DUVOICE_XMPP)
+endif()
 # The guard refuses a configure that selects no protocol unit: the image
 # needs at least one of the two options.
 if(NOT UVOICE_PROTO_SIP AND NOT UVOICE_PROTO_MGCP)
@@ -367,6 +374,14 @@ elseif(UVOICE_HAL STREQUAL "css")
 	endforeach()
 	list(APPEND HAL_INCLUDE_DIRS ${UVSRTP_INCLUDE_DIR})
 	list(APPEND HAL_LIBRARIES ${UVSRTP_LIBRARY})
+
+	# The ICE and DTLS-SRTP transport of an XMPP image, libuvtransport,
+	# staged by its package.
+	if(UVOICE_XMPP)
+		pkg_check_modules(UVTRANSPORT REQUIRED IMPORTED_TARGET
+				  uvtransport)
+		list(APPEND HAL_LIBRARIES PkgConfig::UVTRANSPORT)
+	endif()
 else()
 	message(FATAL_ERROR
 		"unknown UVOICE_HAL '${UVOICE_HAL}', use stub, udsp or css")
